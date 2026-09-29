@@ -26,7 +26,7 @@ from telethon.tl.types import User
 import urllib.request
 
 # ============ تنظیمات ============
-TOKEN = os.environ.get("TOKEN", "8810050319:AAH5T1qehg7U-oplDB_yp4JVGZl6W866BzY")
+TOKEN = os.environ.get("TOKEN", "8692551717:AAFnJeLHoQEPWXsyMoCIPxMHBIvj8wyQz4Y")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
