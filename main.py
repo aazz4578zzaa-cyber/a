@@ -17,12 +17,18 @@ from telethon.errors import (
     PhoneCodeInvalidError,
     PhoneCodeExpiredError,
     FloodWaitError,
-    PhoneNumberInvalidError
+    PhoneNumberInvalidError,
+    MessageIdInvalidError,
+    MessageNotModifiedError,
+    ChatWriteForbiddenError,
+    UserNotParticipantError
 )
+from telethon.errors.rpcerrorlist import RPCError
 from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.functions.photos import UploadProfilePhotoRequest, GetUserPhotosRequest
 from telethon.tl.functions.contacts import BlockRequest
-from telethon.tl.types import User
+from telethon.tl.types import User, ReplyInlineMarkup, KeyboardButtonRow, KeyboardButtonCallback
+from telethon.tl.functions.messages import SendMessageRequest, EditMessageRequest, SetBotCallbackAnswerRequest
 import urllib.request
 
 # ============ تنظیمات ============
@@ -34,7 +40,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ============ تنظیمات ثابت ============
 IRAN_TZ = ZoneInfo("Asia/Tehran")
 DATA_FILE = os.environ.get("DATA_FILE", "/data/selfs.json")
 DATA_BACKUP_FILE = os.environ.get("DATA_BACKUP_FILE", "/data/selfs_backup.json")
@@ -58,10 +63,7 @@ DATA_LOCK = asyncio.Lock()
 is_shutting_down = False
 _save_lock = asyncio.Lock()
 
-# ذخیره mapping: (self_user_id, owner_telegram_id, index)
-self_owner_map = {}
-
-# ============ فونت‌های ساعت ============
+# ============ فونت‌ها ============
 FONTS = {
     '1': {'name': 'فونت 1', 'display': '𝟎𝟎:𝟎𝟎', 'map': '𝟎𝟏𝟐𝟑𝟒𝟓𝟔𝟕𝟖𝟗'},
     '2': {'name': 'فونت 2', 'display': '𝟬𝟬:𝟬𝟬', 'map': '𝟬𝟭𝟮𝟯𝟰𝟱𝟲𝟳𝟴𝟵'},
@@ -102,7 +104,7 @@ async def save_data():
                     pass
             os.replace(temp_file, DATA_FILE)
         except Exception as e:
-            logger.exception(f"Error saving data: {e}")
+            logger.exception(f"Save error: {e}")
 
 load_data()
 
@@ -170,7 +172,7 @@ async def clear_user_state(user_id):
         except: pass
         del user_sessions[user_id]
 
-# ============ سلف ============
+# ============ توابع سلف ============
 async def get_user_session_by_index(user_id, account_index):
     uid = str(user_id)
     selfs = self_data.get(uid, [])
@@ -185,11 +187,15 @@ async def get_user_session_by_index(user_id, account_index):
     return None
 
 async def start_self_client(user_id, account_index):
+    """شروع کلاینت سلف با هندلرهای کامل"""
     try:
         key = get_self_key(user_id, account_index)
         sd = await get_user_session_by_index(user_id, account_index)
-        if not sd: return False
+        if not sd:
+            logger.warning(f"No session data for {user_id}[{account_index}]")
+            return False
 
+        # اگه قبلاً وجود داره، اول قطع کن
         if key in self_clients:
             try: await self_clients[key].disconnect()
             except: pass
@@ -205,60 +211,85 @@ async def start_self_client(user_id, account_index):
         )
         await client.connect()
         if not await client.is_user_authorized():
+            logger.warning(f"Session not authorized for {user_id}[{account_index}]")
             await client.disconnect()
             return False
+        
         me = await client.get_me()
         self_user_id = me.id
         self_clients[key] = client
+        
+        logger.info(f"✅ Self client connected: {self_user_id} ({me.username or me.first_name}) for owner {user_id}[{account_index}]")
 
-        # ذخیره mapping برای پیدا کردن owner
-        self_owner_map[self_user_id] = (str(user_id), account_index)
-
-        # ===== هندلر پیام‌های خروجی =====
-        @client.on(events.NewMessage(outgoing=True))
-        async def outgoing_handler(event):
+        # ==================== هندلر اصلی پیام‌ها ====================
+        @client.on(events.NewMessage)
+        async def message_handler(event):
+            """هندلر سراسری پیام‌ها — چه ارسالی چه دریافتی"""
             try:
                 msg = event.message
-                if not msg or not msg.text: return
+                if not msg or not msg.text:
+                    return
+
                 text = msg.text.strip()
+                
+                # ============ لاگ برای دیباگ ============
+                sender_id = event.sender_id
+                is_out = event.out
+                logger.info(f"📩 MSG: out={is_out} sender={sender_id} text='{text[:50]}'")
 
-                # ---- دستور .پنل ----
-                if text == ".پنل":
-                    await safe_delete(event)
-                    try:
-                        await send_panel_inline(client, self_user_id, int(user_id), account_index)
-                    except Exception as e:
-                        logger.exception(f"panel send err: {e}")
-                    return
+                # ============ دستور پنل ============
+                # فقط اگه از خودمون (self user) ارسال شده
+                if is_out and sender_id == self_user_id:
+                    if text in ("پنل", ".پنل", "/panel", "/پنل", "panel"):
+                        logger.info(f"✅ PANEL command detected in chat {event.chat_id}")
+                        await handle_panel_command(client, event, self_user_id, int(user_id), account_index)
+                        return
+                    
+                    # ============ دستور بلاک ============
+                    if text in (".بلاک", "بلاک", "/block", "/بلاک"):
+                        await handle_self_block(client, event, self_user_id)
+                        return
 
-                # ---- /panel (با اسلش) ----
-                if text == "/panel":
-                    await safe_delete(event)
-                    try:
-                        await send_panel_inline(client, self_user_id, int(user_id), account_index)
-                    except Exception as e:
-                        logger.exception(f"panel send err: {e}")
-                    return
-
-                # ---- دستور .بلاک ----
-                if text == ".بلاک":
-                    await handle_self_block(client, event, self_user_id)
-                    return
+                # ============ بلاک ورودی ============
+                if not is_out and sender_id != self_user_id:
+                    if text in (".بلاک", "بلاک", "/block", "/بلاک"):
+                        await handle_self_block(client, event, self_user_id, is_incoming=True)
+                        return
 
             except Exception as e:
-                logger.exception(f"outgoing err: {e}")
+                logger.exception(f"Message handler error: {e}")
 
-        # ===== هندلر پیام‌های ورودی =====
-        @client.on(events.NewMessage(incoming=True))
-        async def incoming_handler(event):
+        # ==================== هندلر Callback ====================
+        @client.on(events.Raw)
+        async def callback_handler(update):
+            """هندلر Callback Query — برای دکمه‌های پنل"""
             try:
-                msg = event.message
-                if not msg or not msg.text: return
-                if msg.text.strip() != ".بلاک": return
-                await handle_self_block(client, event, self_user_id, is_incoming=True)
-            except Exception as e:
-                logger.exception(f"incoming err: {e}")
+                from telethon.tl.types import UpdateBotCallbackQuery
+                if not isinstance(update, UpdateBotCallbackQuery):
+                    return
+                
+                data = update.data.decode() if update.data else ""
+                if not data.startswith("selfpanel_"):
+                    return
 
+                logger.info(f"🔘 Callback: {data}")
+
+                # پاسخ فوری
+                try:
+                    await client(SetBotCallbackAnswerRequest(
+                        query_id=update.query_id,
+                        message="✅",
+                        cache_time=0
+                    ))
+                except: pass
+
+                # پردازش
+                await handle_self_callback(client, update, data, self_user_id, int(user_id), account_index)
+
+            except Exception as e:
+                logger.exception(f"Callback handler error: {e}")
+
+        # اجرای کلاینت در پس‌زمینه
         async def run_client():
             try:
                 await client.run_until_disconnected()
@@ -268,32 +299,204 @@ async def start_self_client(user_id, account_index):
 
         task = asyncio.create_task(run_client())
         self_tasks[key] = task
-        logger.info(f"✅ Self client started: {user_id}[{account_index}]")
+        
+        logger.info(f"✅ Self client started: {self_user_id}[{account_index}] for owner {user_id}")
         return True
+
     except Exception as e:
         logger.exception(f"start_self err: {e}")
         return False
 
-async def stop_self_client(user_id, account_index):
-    key = get_self_key(user_id, account_index)
-    if key in self_clients:
-        try: await self_clients[key].disconnect()
-        except: pass
-        del self_clients[key]
-    if key in self_tasks:
-        self_tasks[key].cancel()
-        try: await self_tasks[key]
-        except: pass
-        del self_tasks[key]
-
-async def safe_delete(event):
-    """حذف پیام با مدیریت خطا"""
+async def handle_panel_command(client, event, self_user_id, owner_id, account_index):
+    """پردازش دستور پنل — حذف پیام و ارسال پنل در همون چت"""
     try:
-        await event.delete()
-        return True
+        chat_id = event.chat_id
+        msg_id = event.message.id
+        
+        # ============ حذف پیام دستور ============
+        try:
+            await client.delete_messages(chat_id, [msg_id])
+            logger.info(f"🗑️ Panel command deleted in {chat_id}")
+        except MessageIdInvalidError:
+            logger.warning(f"Cannot delete message (invalid id)")
+        except ChatWriteForbiddenError:
+            logger.warning(f"No permission to delete in {chat_id}")
+        except RPCError as e:
+            logger.warning(f"Delete error: {e}")
+        except Exception as e:
+            logger.warning(f"Delete error: {e}")
+
+        # ============ ارسال پنل در همون چت ============
+        await send_panel_in_chat(client, chat_id, self_user_id, owner_id, account_index)
+
     except Exception as e:
-        logger.warning(f"delete err: {e}")
-        return False
+        logger.exception(f"handle_panel_command err: {e}")
+        try:
+            await client.send_message(chat_id, f"❌ خطا: {str(e)[:100]}")
+        except: pass
+
+async def send_panel_in_chat(client, chat_id, self_user_id, owner_id, account_index):
+    """ارسال پنل با دکمه‌های Inline در چت مشخص"""
+    try:
+        me = await client.get_me()
+        username = me.username or "بدون یوزرنیم"
+        name = (me.first_name or "") + ((" " + me.last_name) if me.last_name else "") or "کاربر"
+        
+        # اطلاعات سلف از دیتا
+        sa = None
+        try:
+            selfs = self_data.get(str(owner_id), [])
+            if 0 <= account_index < len(selfs):
+                sa = selfs[account_index]
+        except: pass
+
+        phone = sa.get('phone', '-') if sa else '-'
+        clock = "🟢 فعال" if (sa and sa.get('clock_active')) else "🔴 غیرفعال"
+        font = FONT_NAMES.get(sa.get('font_type', '1'), 'فونت 1') if sa else 'فونت 1'
+
+        text = (
+            f"🌟 <b>پنل مدیریت سلف</b>\n\n"
+            f"👤 <b>نام:</b> {html.escape(name)}\n"
+            f"🆔 <b>یوزرنیم:</b> @{html.escape(username)}\n"
+            f"📱 <b>شماره:</b> <code>{html.escape(phone)}</code>\n"
+            f"⏰ <b>ساعت:</b> {clock}\n"
+            f"🎨 <b>فونت:</b> {font}\n\n"
+            f"📌 <b>دستورات:</b>\n"
+            f"• <code>پنل</code> یا <code>.پنل</code> — نمایش این پنل\n"
+            f"• <code>بلاک</code> یا <code>.بلاک</code> — بلاک کاربر\n\n"
+            f"از دکمه‌های زیر استفاده کن:"
+        )
+
+        rows = [
+            KeyboardButtonRow(buttons=[
+                KeyboardButtonCallback(text="👤 حساب من", data=f"selfpanel_me_{account_index}".encode())
+            ]),
+            KeyboardButtonRow(buttons=[
+                KeyboardButtonCallback(text="📊 وضعیت سرویس", data=f"selfpanel_status_{account_index}".encode())
+            ]),
+            KeyboardButtonRow(buttons=[
+                KeyboardButtonCallback(text="⏰ وضعیت ساعت", data=f"selfpanel_clock_{account_index}".encode())
+            ]),
+            KeyboardButtonRow(buttons=[
+                KeyboardButtonCallback(text="🎨 فونت‌ها", data=f"selfpanel_fonts_{account_index}".encode())
+            ]),
+            KeyboardButtonRow(buttons=[
+                KeyboardButtonCallback(text="🔄 بروزرسانی", data=f"selfpanel_refresh_{account_index}".encode())
+            ]),
+            KeyboardButtonRow(buttons=[
+                KeyboardButtonCallback(text="❌ بستن پنل", data=f"selfpanel_close_{account_index}".encode())
+            ])
+        ]
+        markup = ReplyInlineMarkup(rows=rows)
+
+        try:
+            await client(SendMessageRequest(
+                peer=chat_id,
+                message=text,
+                parse_mode='html',
+                reply_markup=markup
+            ))
+            logger.info(f"✅ Panel sent to {chat_id}")
+        except ChatWriteForbiddenError:
+            logger.warning(f"Cannot write to {chat_id}")
+        except RPCError as e:
+            logger.warning(f"Send panel error: {e}")
+
+    except Exception as e:
+        logger.exception(f"send_panel err: {e}")
+
+async def handle_self_callback(client, update, data, self_user_id, owner_id, account_index):
+    """پردازش دکمه‌های پنل"""
+    try:
+        peer = update.peer
+        msg_id = update.msg_id
+
+        # اطلاعات
+        sa = None
+        try:
+            selfs = self_data.get(str(owner_id), [])
+            if 0 <= account_index < len(selfs):
+                sa = selfs[account_index]
+        except: pass
+
+        me = await client.get_me()
+
+        if "me" in data:
+            name = (me.first_name or "") + ((" " + me.last_name) if me.last_name else "") or "کاربر"
+            text = (
+                f"👤 <b>حساب من</b>\n\n"
+                f"نام: {html.escape(name)}\n"
+                f"یوزرنیم: @{html.escape(me.username or '-')}\n"
+                f"آیدی: <code>{me.id}</code>\n"
+                f"شماره: <code>{html.escape(me.phone or '-')}</code>"
+            )
+            await edit_panel(client, peer, msg_id, text, account_index)
+
+        elif "status" in data:
+            clock_st = "🟢 فعال" if (sa and sa.get('clock_active')) else "🔴 غیرفعال"
+            text = (
+                f"📊 <b>وضعیت سرویس</b>\n\n"
+                f"⏰ ساعت: {clock_st}\n"
+                f"🔗 اتصال: 🟢 فعال\n"
+                f"📅 تاریخ: {get_iran_date_str()}\n"
+                f"🕐 ساعت: {get_iran_time_short()}"
+            )
+            await edit_panel(client, peer, msg_id, text, account_index)
+
+        elif "clock" in data:
+            clock_st = "🟢 فعال" if (sa and sa.get('clock_active')) else "🔴 غیرفعال"
+            font = FONT_NAMES.get(sa.get('font_type', '1'), 'فونت 1') if sa else 'فونت 1'
+            text = (
+                f"⏰ <b>وضعیت ساعت</b>\n\n"
+                f"وضعیت: {clock_st}\n"
+                f"فونت: {font}\n"
+                f"زمان فعلی: {get_iran_time_short()}"
+            )
+            await edit_panel(client, peer, msg_id, text, account_index)
+
+        elif "fonts" in data:
+            fonts_list = "\n".join([f"• {v['display']} {v['name']}" for k, v in list(FONTS.items())[:6]])
+            text = f"🎨 <b>فونت‌های موجود</b>\n\n{fonts_list}\n\n💡 برای تغییر فونت به ربات اصلی بروید."
+            await edit_panel(client, peer, msg_id, text, account_index)
+
+        elif "refresh" in data:
+            # ارسال پنل جدید
+            await send_panel_in_chat(client, peer, self_user_id, owner_id, account_index)
+
+        elif "close" in data:
+            try:
+                await client.delete_messages(peer, [msg_id])
+            except Exception as e:
+                logger.warning(f"Close panel error: {e}")
+
+    except MessageNotModifiedError:
+        pass
+    except Exception as e:
+        logger.exception(f"handle_callback err: {e}")
+
+async def edit_panel(client, peer, msg_id, text, account_index):
+    """ویرایش پنل با دکمه بازگشت"""
+    rows = [
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="🔙 بازگشت", data=f"selfpanel_back_{account_index}".encode())
+        ]),
+        KeyboardButtonRow(buttons=[
+            KeyboardButtonCallback(text="❌ بستن", data=f"selfpanel_close_{account_index}".encode())
+        ])
+    ]
+    markup = ReplyInlineMarkup(rows=rows)
+    try:
+        await client(EditMessageRequest(
+            peer=peer,
+            id=msg_id,
+            message=text,
+            parse_mode='html',
+            reply_markup=markup
+        ))
+    except MessageNotModifiedError:
+        pass
+    except Exception as e:
+        logger.warning(f"Edit panel error: {e}")
 
 # ============ بلاک ============
 async def handle_self_block(client, event, self_user_id, is_incoming=False):
@@ -333,199 +536,6 @@ async def handle_self_block(client, event, self_user_id, is_incoming=False):
             except: pass
     except Exception as e:
         logger.exception(f"block err: {e}")
-
-# ============ پنل Inline ============
-async def send_panel_inline(client, self_user_id, owner_id, account_index):
-    """ارسال پنل با دکمه‌های Inline به Saved Messages"""
-    sa = None
-    try:
-        sa = self_data.get(str(owner_id), [])[account_index]
-    except:
-        pass
-
-    me = await client.get_me()
-    username = me.username or "بدون یوزرنیم"
-    name = escape_html((me.first_name or "") + ((" " + me.last_name) if me.last_name else "") or "کاربر")
-
-    if sa:
-        phone = escape_html(sa.get('phone', '-'))
-        clock = "🟢 فعال" if sa.get('clock_active') else "🔴 غیرفعال"
-        font = FONT_NAMES.get(sa.get('font_type', '1'), 'فونت 1')
-    else:
-        phone = "-"
-        clock = "🔴 غیرفعال"
-        font = "فونت 1"
-
-    text = f"""
-🌟 <b>پنل مدیریت سلف</b>
-
-👤 <b>نام:</b> {name}
-🆔 <b>یوزرنیم:</b> @{escape_html(username)}
-📱 <b>شماره:</b> <code>{phone}</code>
-⏰ <b>ساعت:</b> {clock}
-🎨 <b>فونت:</b> {font}
-
-📌 <b>دستورات:</b>
-• <code>.پنل</code> یا <code>/panel</code> — نمایش این پنل
-• <code>.بلاک</code> — بلاک کاربر (پیوی یا ریپلای)
-
-از دکمه‌های زیر برای مدیریت سریع استفاده کن:
-"""
-
-    keyboard = [
-        [InlineKeyboardButton("🔄 بروزرسانی پنل", callback_data=f"selfpanel_refresh_{account_index}")],
-        [InlineKeyboardButton("⏰ وضعیت ساعت", callback_data=f"selfpanel_clock_{account_index}")],
-        [InlineKeyboardButton("🎨 فونت‌ها", callback_data=f"selfpanel_fonts_{account_index}")],
-        [InlineKeyboardButton("📋 اطلاعات کامل", callback_data=f"selfpanel_info_{account_index}")],
-        [InlineKeyboardButton("❌ بستن پنل", callback_data=f"selfpanel_close_{account_index}")]
-    ]
-
-    try:
-        await client.send_message(
-            self_user_id, text,
-            parse_mode='html',
-            link_preview=False,
-            buttons=InlineKeyboardMarkup(keyboard) if False else None
-        )
-        # Telethon از InlineKeyboardMarkup پایتون‌تلگرام استفاده نمی‌کنه، باید خودمون بسازیم
-        # اما برای سادگی، دکمه‌ها رو با reply markup تلگرام می‌سازیم
-    except Exception as e:
-        logger.exception(f"panel send err: {e}")
-
-# از اونجایی که Telethon و python-telegram-bot دو تا سیستم مختلف دارن،
-# برای پنل داخل اکانت سلف از inline keyboard تلگرام (raw) استفاده می‌کنیم
-
-async def send_panel_inline_v2(client, self_user_id, owner_id, account_index):
-    """نسخه دوم - با استفاده از raw Telegram API برای دکمه‌های Inline"""
-    from telethon.tl.types import (
-        ReplyInlineMarkup, KeyboardButtonRow, KeyboardButtonCallback
-    )
-    from telethon.tl.functions.messages import SendMessageRequest
-
-    sa = None
-    try:
-        sa = self_data.get(str(owner_id), [])[account_index]
-    except:
-        pass
-
-    me = await client.get_me()
-    username = me.username or "بدون یوزرنیم"
-    name = (me.first_name or "") + ((" " + me.last_name) if me.last_name else "") or "کاربر"
-
-    if sa:
-        phone = sa.get('phone', '-')
-        clock = "🟢 فعال" if sa.get('clock_active') else "🔴 غیرفعال"
-        font = FONT_NAMES.get(sa.get('font_type', '1'), 'فونت 1')
-    else:
-        phone = "-"
-        clock = "🔴 غیرفعال"
-        font = "فونت 1"
-
-    text = (
-        f"🌟 <b>پنل مدیریت سلف</b>\n\n"
-        f"👤 <b>نام:</b> {name}\n"
-        f"🆔 <b>یوزرنیم:</b> @{username}\n"
-        f"📱 <b>شماره:</b> <code>{phone}</code>\n"
-        f"⏰ <b>ساعت:</b> {clock}\n"
-        f"🎨 <b>فونت:</b> {font}\n\n"
-        f"📌 <b>دستورات:</b>\n"
-        f"• <code>.پنل</code> یا <code>/panel</code>\n"
-        f"• <code>.بلاک</code>"
-    )
-
-    rows = [
-        KeyboardButtonRow(buttons=[
-            KeyboardButtonCallback(text="🔄 بروزرسانی", data=f"selfpanel_refresh_{account_index}".encode())
-        ]),
-        KeyboardButtonRow(buttons=[
-            KeyboardButtonCallback(text="⏰ وضعیت ساعت", data=f"selfpanel_clock_{account_index}".encode())
-        ]),
-        KeyboardButtonRow(buttons=[
-            KeyboardButtonCallback(text="🎨 فونت‌ها", data=f"selfpanel_fonts_{account_index}".encode())
-        ]),
-        KeyboardButtonRow(buttons=[
-            KeyboardButtonCallback(text="📋 اطلاعات کامل", data=f"selfpanel_info_{account_index}".encode())
-        ]),
-        KeyboardButtonRow(buttons=[
-            KeyboardButtonCallback(text="❌ بستن پنل", data=f"selfpanel_close_{account_index}".encode())
-        ])
-    ]
-    markup = ReplyInlineMarkup(rows=rows)
-
-    try:
-        await client(SendMessageRequest(
-            peer=self_user_id,
-            message=text,
-            parse_mode='html',
-            reply_markup=markup
-        ))
-    except Exception as e:
-        logger.exception(f"panel v2 err: {e}")
-
-# هندلر Callback داخل سلف
-def register_self_callback_handler(client, self_user_id, owner_id, account_index):
-    """ثبت هندلر برای Callback Queryهای داخل اکانت سلف"""
-    from telethon import events as tl_events
-    from telethon.tl.functions.messages import EditMessageRequest
-
-    @client.on(tl_events.Raw)
-    async def raw_handler(update):
-        try:
-            # هندل CallbackQuery
-            from telethon.tl.types import UpdateBotCallbackQuery
-            if isinstance(update, UpdateBotCallbackQuery):
-                data = update.data.decode() if update.data else ""
-                if not data.startswith("selfpanel_"): return
-
-                # پاسخ به callback
-                try:
-                    from telethon.tl.functions.messages import SetBotCallbackAnswerRequest
-                    await client(SetBotCallbackAnswerRequest(
-                        query_id=update.query_id,
-                        message="✅",
-                        cache_time=0
-                    ))
-                except: pass
-
-                # ساخت متن جدید بر اساس دکمه
-                if "refresh" in data:
-                    await send_panel_inline_v2(client, self_user_id, owner_id, account_index)
-                elif "close" in data:
-                    try:
-                        await client.delete_messages(update.peer, [update.msg_id])
-                    except: pass
-                elif "clock" in data:
-                    sa = self_data.get(str(owner_id), [])[account_index] if 0 <= account_index < len(self_data.get(str(owner_id), [])) else None
-                    clock_st = "🟢 فعال" if sa and sa.get('clock_active') else "🔴 غیرفعال"
-                    try:
-                        await client(EditMessageRequest(
-                            peer=update.peer,
-                            id=update.msg_id,
-                            message=f"⏰ <b>وضعیت ساعت</b>\n\n{clock_st}",
-                            parse_mode='html'
-                        ))
-                    except: pass
-                elif "fonts" in data:
-                    try:
-                        await client(EditMessageRequest(
-                            peer=update.peer,
-                            id=update.msg_id,
-                            message="🎨 <b>فونت‌ها در ربات اصلی قابل تغییر است</b>",
-                            parse_mode='html'
-                        ))
-                    except: pass
-                elif "info" in data:
-                    me = await client.get_me()
-                    try:
-                        await client(EditMessageRequest(
-                            peer=update.peer,
-                            id=update.msg_id,
-                            message=f"📋 <b>اطلاعات</b>\n\n👤 {me.first_name}\n🆔 @{me.username or '-'}\n📱 {me.phone or '-'}",
-                            parse_mode='html'
-                        ))
-                    except: pass
-        except Exception as e:
-            logger.exception(f"raw handler err: {e}")
 
 # ============ ساعت ============
 async def set_clock_on_profile(session_string, api_id, api_hash, font_type):
@@ -584,7 +594,7 @@ async def clock_loop(user_id, account_index, session_string, api_id, api_hash, f
             logger.exception(f"clock loop err: {e}")
             await asyncio.sleep(3)
 
-# ============ منو ============
+# ============ منو (ربات) ============
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=False):
     user = update.effective_user
     name = escape_html(user.first_name or "کاربر")
@@ -596,6 +606,10 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, edit=Fal
 <b>جناب {name} گرامی</b>
 
 تعداد سلف‌های ثبت شده: <b>{cnt}</b>
+
+📌 <b>دستورات داخل اکانت سلف:</b>
+• <code>پنل</code> یا <code>.پنل</code> — نمایش پنل
+• <code>بلاک</code> یا <code>.بلاک</code> — بلاک کاربر
 """
     kb = [
         [InlineKeyboardButton("🔷 ایجاد سلف جدید", callback_data="new_session")],
@@ -629,7 +643,8 @@ async def list_selfs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for i, sa in enumerate(selfs):
         nm = escape_html(sa.get('account_name', 'بدون نام'))
         ca = "🟢" if sa.get('clock_active') else "🔴"
-        text += f"\n{i+1}. {nm} {ca}"
+        conn = "🔗" if get_self_key(int(uid), i) in self_clients else "❌"
+        text += f"\n{i+1}. {nm} {ca} {conn}"
         kb.append([InlineKeyboardButton(f"⚙️ {i+1}. {nm}", callback_data=f"manage_{i}")])
     kb.append([InlineKeyboardButton("🔷 جدید", callback_data="new_session")])
     kb.append([InlineKeyboardButton("🔙 بازگشت", callback_data="back")])
@@ -658,8 +673,10 @@ async def manage_self(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🕐 <code>{escape_html(sa.get('active_time','-'))}</code>
 🎨 {FONT_NAMES.get(sa.get('font_type','1'),'-')}
 📊 ساعت: {'🟢' if sa.get('clock_active') else '🔴'}
-🔗 اتصال: {'🟢' if conn else '🔴'}
+🔗 اتصال: {'🟢 متصل' if conn else '🔴 قطع'}
 {'🔄 جاب در حال اجرا' if job else ''}
+
+📌 دستورات در اکانت: <code>پنل</code> و <code>بلاک</code>
 """
     kb = []
     if not conn:
@@ -687,7 +704,7 @@ async def connect_self(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: index = int(q.data.split('_')[2])
     except: return
     r = await start_self_client(int(uid), index)
-    t = f"✅ متصل شد!" if r else "❌ خطا!"
+    t = f"✅ متصل شد!" if r else "❌ خطا در اتصال!"
     await q.edit_message_text(t, reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 بازگشت", callback_data=f"manage_{index}")]
     ]), parse_mode='HTML')
@@ -699,12 +716,21 @@ async def disconnect_self(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(q.from_user.id)
     try: index = int(q.data.split('_')[2])
     except: return
-    await stop_self_client(int(uid), index)
+    key = get_self_key(int(uid), index)
+    if key in self_clients:
+        try: await self_clients[key].disconnect()
+        except: pass
+        del self_clients[key]
+    if key in self_tasks:
+        self_tasks[key].cancel()
+        try: await self_tasks[key]
+        except: pass
+        del self_tasks[key]
     await q.edit_message_text("✅ قطع شد!", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("🔙 بازگشت", callback_data=f"manage_{index}")]
     ]), parse_mode='HTML')
 
-# ============ ساعت ============
+# ============ ساعت (ربات) ============
 async def activate_clock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     try: await q.answer()
@@ -758,7 +784,7 @@ async def deactivate_clock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🔙 بازگشت", callback_data=f"manage_{index}")]
     ]), parse_mode='HTML')
 
-# ============ فونت ============
+# ============ فونت (ربات) ============
 async def font_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     try: await q.answer()
@@ -1292,7 +1318,7 @@ async def handle_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear_user_state(uid)
         ni = len(self_data[us]) - 1
         await start_self_client(uid, ni)
-        text = f"✅ سلف ساخته شد!\n📱 {escape_html(d['phone'])}\n👤 {escape_html(an)}\n\n📌 دستورات:\n• <code>.پنل</code> یا <code>/panel</code>\n• <code>.بلاک</code>"
+        text = f"✅ سلف ساخته شد!\n📱 {escape_html(d['phone'])}\n👤 {escape_html(an)}\n\n📌 دستورات:\n• <code>پنل</code> یا <code>.پنل</code>\n• <code>بلاک</code> یا <code>.بلاک</code>"
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("🔷 جدید", callback_data="new_session")],
             [InlineKeyboardButton("📋 لیست", callback_data="list_selfs")],
@@ -1392,7 +1418,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_copy_id(update, context); return
     await update.message.reply_text("❌ از منو استفاده کن. /start", parse_mode='HTML')
 
-# ============ Restart on startup ============
+# ============ Restart ============
 async def restart_all_self_clients(app):
     logger.info("🔄 Restarting self clients...")
     for owner_id, selfs in list(self_data.items()):
