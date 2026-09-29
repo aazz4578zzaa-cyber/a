@@ -23,7 +23,7 @@ from telethon.errors import (FloodWaitError, PhoneCodeExpiredError,
 from telethon.tl.functions.account import UpdateProfileRequest
 from telethon.tl.types import KeyboardButtonCallback
 
-TOKEN = "8961040480:AAHNKEnK7LZuCp9fSJ5td2_XdGFqPtwp_dY"
+TOKEN = "8961040480:AAGM9bGnba6JLjaXiaC5RjI-UNz-buzU4V8"
 CHANNEL_USERNAME = "@ReaperSelfChannel"
 ADMIN_IDS = [7803165903, 8831703400]
 BOT_USERNAME = "@RipperSelfbot"
