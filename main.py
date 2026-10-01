@@ -21,21 +21,21 @@ from telethon.errors import (FloodWaitError, PhoneCodeExpiredError,
                              PhoneCodeInvalidError, PhoneNumberInvalidError,
                              SessionPasswordNeededError)
 from telethon.tl.functions.account import UpdateProfileRequest
-from telethon.tl.types import KeyboardButtonCallback
+from telethon.tl.functions.contacts import BlockRequest
+from telethon.tl.types import KeyboardButtonCallback, User
 
-TOKEN = "8961040480:AAGM9bGnba6JLjaXiaC5RjI-UNz-buzU4V8"
+# ==================== تنظیمات ====================
+TOKEN = os.environ.get("TOKEN", "8961040480:AAGM9bGnba6JLjaXiaC5RjI-UNz-buzU4V8")
 CHANNEL_USERNAME = "@ReaperSelfChannel"
 ADMIN_IDS = [7803165903, 8831703400]
-BOT_USERNAME = "@RipperSelfbot"
 
 DB_FILE = "bot_database.db"
 
 # ==================== DATABASE ====================
-
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY,
@@ -51,7 +51,7 @@ def init_db():
             clock_active INTEGER DEFAULT 1
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS codes (
             code TEXT PRIMARY KEY,
@@ -62,7 +62,7 @@ def init_db():
             used_by TEXT
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS sessions (
             user_id INTEGER PRIMARY KEY,
@@ -73,7 +73,7 @@ def init_db():
             created_date TEXT
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS verify_requests (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +87,7 @@ def init_db():
             response_date TEXT
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS banned_users (
             user_id INTEGER PRIMARY KEY,
@@ -95,7 +95,7 @@ def init_db():
             reason TEXT
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS support_tickets (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,7 +108,7 @@ def init_db():
             response_date TEXT
         )
     ''')
-    
+
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS self_settings (
             user_id INTEGER PRIMARY KEY,
@@ -137,12 +137,13 @@ def init_db():
             public_self INTEGER DEFAULT 0
         )
     ''')
-    
+
     conn.commit()
     conn.close()
 
 init_db()
 
+# ==================== STATE ====================
 user_states = {}
 salf_login_data = {}
 clock_tasks = {}
@@ -152,12 +153,12 @@ pending_verify = {}
 user_menu_mode = {}
 clock_status = {}
 salf_clients = {}
+self_tasks = {}
 
 if not os.path.exists("sessions"):
     os.makedirs("sessions")
 
 # ==================== DATABASE FUNCTIONS ====================
-
 def db_add_user(user_id, username, first_name, last_name, phone=None):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -369,28 +370,12 @@ def db_get_self_settings(user_id):
             'public_self': result[23] == 1
         }
     return {
-        'clock_enabled': False,
-        'auto_read': False,
-        'auto_reply': False,
-        'anti_insult': False,
-        'animated_msg': False,
-        'smart_secretary': False,
-        'bio': False,
-        'name_setting': False,
-        'analytics': False,
-        'about': False,
-        'title': False,
-        'anti_login': False,
-        'auto_setting': False,
-        'banner': False,
-        'comment': False,
-        'birthday': False,
-        'alert': False,
-        'classic': True,
-        'modern': False,
-        'persian': True,
-        'english': False,
-        'region': True,
+        'clock_enabled': False, 'auto_read': False, 'auto_reply': False,
+        'anti_insult': False, 'animated_msg': False, 'smart_secretary': False,
+        'bio': False, 'name_setting': False, 'analytics': False, 'about': False,
+        'title': False, 'anti_login': False, 'auto_setting': False, 'banner': False,
+        'comment': False, 'birthday': False, 'alert': False, 'classic': True,
+        'modern': False, 'persian': True, 'english': False, 'region': True,
         'public_self': False
     }
 
@@ -433,7 +418,6 @@ def db_update_self_settings(user_id, settings):
     conn.close()
 
 # ==================== HELPER FUNCTIONS ====================
-
 def is_admin(user_id):
     return user_id in ADMIN_IDS
 
@@ -560,418 +544,485 @@ def use_code(code, user_id):
     conn.close()
     return True
 
-# ==================== SELF PANEL ====================
-
+# ==================== SELF PANEL (رنگی) ====================
 def build_panel_text(settings):
-    text = "**⚡ لطفا یکی از گزینه‌های زیر را انتخاب نمایید:**\n\n"
-    
-    text += "**━━━━━━━━━━━━━━━━━━━━**\n"
-    text += f"**🖥️ کلاسیک:** {'✅' if settings.get('classic', True) else '❌'}\n"
-    text += f"**🖥️ مدرن:** {'✅' if settings.get('modern', False) else '❌'}\n"
-    text += f"**🌍 فارسی:** {'✅' if settings.get('persian', True) else '❌'}\n"
-    text += f"**🌍 انگلیسی:** {'✅' if settings.get('english', False) else '❌'}\n"
-    text += f"**🗺️ منطقه:** {'✅' if settings.get('region', True) else '❌'}\n"
-    text += f"**🌐 سلف همگانی:** {'✅' if settings.get('public_self', False) else '❌'}\n\n"
-    
-    text += "**━━━━━━━━━━━━━━━━━━━━**\n"
-    text += f"**📝 بیوگرافی:** {'✅' if settings.get('bio', False) else '❌'}\n"
-    text += f"**📛 اسم:** {'✅' if settings.get('name_setting', False) else '❌'}\n"
-    text += f"**📊 آنالیتی:** {'✅' if settings.get('analytics', False) else '❌'}\n"
-    text += f"**ℹ️ درباره:** {'✅' if settings.get('about', False) else '❌'}\n"
-    text += f"**📌 عنوان:** {'✅' if settings.get('title', False) else '❌'}\n"
-    text += f"**🔒 آنتی لاگین:** {'✅' if settings.get('anti_login', False) else '❌'}\n\n"
-    
-    text += "**━━━━━━━━━━━━━━━━━━━━**\n"
-    text += f"**⏰ ساعت:** {'✅' if settings.get('clock_enabled', False) else '❌'}\n"
-    text += f"**👁️ خودخوان:** {'✅' if settings.get('auto_read', False) else '❌'}\n"
-    text += f"**🤖 پاسخ خودکار:** {'✅' if settings.get('auto_reply', False) else '❌'}\n"
-    text += f"**🛡️ ضد توهین:** {'✅' if settings.get('anti_insult', False) else '❌'}\n"
-    text += f"**🎬 پیام انیمیشنی:** {'✅' if settings.get('animated_msg', False) else '❌'}\n"
-    text += f"**🧠 منشی هوشمند:** {'✅' if settings.get('smart_secretary', False) else '❌'}\n"
-    text += f"**🤖 خودکار:** {'✅' if settings.get('auto_setting', False) else '❌'}\n"
-    text += f"**🖼️ بنر:** {'✅' if settings.get('banner', False) else '❌'}\n"
-    text += f"**💬 کامنت:** {'✅' if settings.get('comment', False) else '❌'}\n"
-    text += f"**🎂 تولد:** {'✅' if settings.get('birthday', False) else '❌'}\n"
-    text += f"**🔔 هشدار:** {'✅' if settings.get('alert', False) else '❌'}\n"
-    
-    return text
+    """متن پنل با ایموجی‌های رنگی"""
+    t = "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+    t += "   ⬢ **پنل مدیریت ریپر سلف** ⬢\n"
+    t += "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n\n"
+    t += "**⌬ لطفاً یکی از گزینه‌های زیر را انتخاب کنید:**\n\n"
+
+    # بخش ظاهری
+    t += "◆━━━ ظاهری ━━━◆\n"
+    t += f"  {'✅' if settings.get('classic', True) else '❌'} ◂ کلاسیک\n"
+    t += f"  {'✅' if settings.get('modern', False) else '❌'} ◂ مدرن\n"
+    t += f"  {'✅' if settings.get('persian', True) else '❌'} ◂ فارسی\n"
+    t += f"  {'✅' if settings.get('english', False) else '❌'} ◂ انگلیسی\n"
+    t += f"  {'✅' if settings.get('region', True) else '❌'} ◂ منطقه\n"
+    t += f"  {'✅' if settings.get('public_self', False) else '❌'} ◂ سلف همگانی\n"
+
+    # بخش اطلاعات
+    t += "\n◆━━━ اطلاعات ━━━◆\n"
+    t += f"  {'✅' if settings.get('bio', False) else '❌'} ◂ بیوگرافی\n"
+    t += f"  {'✅' if settings.get('name_setting', False) else '❌'} ◂ اسم\n"
+    t += f"  {'✅' if settings.get('analytics', False) else '❌'} ◂ آنالیتیک\n"
+    t += f"  {'✅' if settings.get('about', False) else '❌'} ◂ درباره\n"
+    t += f"  {'✅' if settings.get('title', False) else '❌'} ◂ عنوان\n"
+    t += f"  {'✅' if settings.get('anti_login', False) else '❌'} ◂ آنتی لاگین\n"
+
+    # بخش قابلیت‌ها
+    t += "\n◆━━━ قابلیت‌ها ━━━◆\n"
+    t += f"  {'✅' if settings.get('clock_enabled', False) else '❌'} ◂ ساعت\n"
+    t += f"  {'✅' if settings.get('auto_read', False) else '❌'} ◂ خودخوان\n"
+    t += f"  {'✅' if settings.get('auto_reply', False) else '❌'} ◂ پاسخ خودکار\n"
+    t += f"  {'✅' if settings.get('anti_insult', False) else '❌'} ◂ ضد توهین\n"
+    t += f"  {'✅' if settings.get('animated_msg', False) else '❌'} ◂ پیام انیمیشنی\n"
+    t += f"  {'✅' if settings.get('smart_secretary', False) else '❌'} ◂ منشی هوشمند\n"
+    t += f"  {'✅' if settings.get('auto_setting', False) else '❌'} ◂ خودکار\n"
+    t += f"  {'✅' if settings.get('banner', False) else '❌'} ◂ بنر\n"
+    t += f"  {'✅' if settings.get('comment', False) else '❌'} ◂ کامنت\n"
+    t += f"  {'✅' if settings.get('birthday', False) else '❌'} ◂ تولد\n"
+    t += f"  {'✅' if settings.get('alert', False) else '❌'} ◂ هشدار\n"
+    t += "\n▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰"
+
+    return t
 
 def build_panel_buttons(settings, user_id):
+    """دکمه‌های رنگی"""
     buttons = []
-    
-    row = [
+
+    # ظاهری
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🖥️ کلاسیک {'✅' if settings.get('classic', True) else '❌'}",
+            text=f"▸ كلاسیک {'🟢' if settings.get('classic', True) else '🔴'}",
             data=f"self_toggle_classic_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🖥️ مدرن {'✅' if settings.get('modern', False) else '❌'}",
+            text=f"▸ مدرن {'🟢' if settings.get('modern', False) else '🔴'}",
             data=f"self_toggle_modern_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🌍 فارسی {'✅' if settings.get('persian', True) else '❌'}",
+            text=f"▸ فارسی {'🟢' if settings.get('persian', True) else '🔴'}",
             data=f"self_toggle_persian_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🌍 انگلیسی {'✅' if settings.get('english', False) else '❌'}",
+            text=f"▸ انگلیسی {'🟢' if settings.get('english', False) else '🔴'}",
             data=f"self_toggle_english_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🗺️ منطقه {'✅' if settings.get('region', True) else '❌'}",
+            text=f"▸ منطقه {'🟢' if settings.get('region', True) else '🔴'}",
             data=f"self_toggle_region_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🌐 سلف همگانی {'✅' if settings.get('public_self', False) else '❌'}",
+            text=f"▸ سلف همگانی {'🟢' if settings.get('public_self', False) else '🔴'}",
             data=f"self_toggle_public_self_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+
+    # اطلاعات
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"📝 بیوگرافی {'✅' if settings.get('bio', False) else '❌'}",
+            text=f"▸ بیوگرافی {'🟢' if settings.get('bio', False) else '🔴'}",
             data=f"self_toggle_bio_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"📛 اسم {'✅' if settings.get('name_setting', False) else '❌'}",
+            text=f"▸ اسم {'🟢' if settings.get('name_setting', False) else '🔴'}",
             data=f"self_toggle_name_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"📊 آنالیتی {'✅' if settings.get('analytics', False) else '❌'}",
+            text=f"▸ آنالیتیک {'🟢' if settings.get('analytics', False) else '🔴'}",
             data=f"self_toggle_analytics_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"ℹ️ درباره {'✅' if settings.get('about', False) else '❌'}",
+            text=f"▸ درباره {'🟢' if settings.get('about', False) else '🔴'}",
             data=f"self_toggle_about_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"📌 عنوان {'✅' if settings.get('title', False) else '❌'}",
+            text=f"▸ عنوان {'🟢' if settings.get('title', False) else '🔴'}",
             data=f"self_toggle_title_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🔒 آنتی لاگین {'✅' if settings.get('anti_login', False) else '❌'}",
+            text=f"▸ آنتی لاگین {'🟢' if settings.get('anti_login', False) else '🔴'}",
             data=f"self_toggle_anti_login_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+
+    # قابلیت‌ها
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"⏰ ساعت {'✅' if settings.get('clock_enabled', False) else '❌'}",
+            text=f"▸ ساعت {'🟢' if settings.get('clock_enabled', False) else '🔴'}",
             data=f"self_toggle_clock_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"👁️ خودخوان {'✅' if settings.get('auto_read', False) else '❌'}",
+            text=f"▸ خودخوان {'🟢' if settings.get('auto_read', False) else '🔴'}",
             data=f"self_toggle_auto_read_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🤖 پاسخ خودکار {'✅' if settings.get('auto_reply', False) else '❌'}",
+            text=f"▸ پاسخ خودکار {'🟢' if settings.get('auto_reply', False) else '🔴'}",
             data=f"self_toggle_auto_reply_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🛡️ ضد توهین {'✅' if settings.get('anti_insult', False) else '❌'}",
+            text=f"▸ ضد توهین {'🟢' if settings.get('anti_insult', False) else '🔴'}",
             data=f"self_toggle_anti_insult_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🎬 پیام انیمیشنی {'✅' if settings.get('animated_msg', False) else '❌'}",
+            text=f"▸ پیام انیمیشنی {'🟢' if settings.get('animated_msg', False) else '🔴'}",
             data=f"self_toggle_animated_msg_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🧠 منشی هوشمند {'✅' if settings.get('smart_secretary', False) else '❌'}",
+            text=f"▸ منشی هوشمند {'🟢' if settings.get('smart_secretary', False) else '🔴'}",
             data=f"self_toggle_smart_secretary_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🤖 خودکار {'✅' if settings.get('auto_setting', False) else '❌'}",
+            text=f"▸ خودکار {'🟢' if settings.get('auto_setting', False) else '🔴'}",
             data=f"self_toggle_auto_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🖼️ بنر {'✅' if settings.get('banner', False) else '❌'}",
+            text=f"▸ بنر {'🟢' if settings.get('banner', False) else '🔴'}",
             data=f"self_toggle_banner_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"💬 کامنت {'✅' if settings.get('comment', False) else '❌'}",
+            text=f"▸ کامنت {'🟢' if settings.get('comment', False) else '🔴'}",
             data=f"self_toggle_comment_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text=f"🎂 تولد {'✅' if settings.get('birthday', False) else '❌'}",
+            text=f"▸ تولد {'🟢' if settings.get('birthday', False) else '🔴'}",
             data=f"self_toggle_birthday_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+    buttons.append([
         KeyboardButtonCallback(
-            text=f"🔔 هشدار {'✅' if settings.get('alert', False) else '❌'}",
+            text=f"▸ هشدار {'🟢' if settings.get('alert', False) else '🔴'}",
             data=f"self_toggle_alert_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
-    row = [
+    ])
+
+    # کنترل
+    buttons.append([
         KeyboardButtonCallback(
             text="🔄 بروزرسانی",
             data=f"self_refresh_{user_id}".encode()
         ),
         KeyboardButtonCallback(
-            text="❌ بستن پنل",
+            text="✖️ بستن پنل",
             data=f"self_close_{user_id}".encode()
         )
-    ]
-    buttons.append(row)
-    
+    ])
+
     return buttons
 
 async def send_self_panel(client, user_id, chat_id, message_id=None):
+    """ارسال پنل از طرف سلف (نه ربات)"""
     try:
         settings = db_get_self_settings(user_id)
-        
         panel_text = build_panel_text(settings)
         buttons = build_panel_buttons(settings, user_id)
-        
+
         if message_id:
             try:
                 await client.edit_message(
-                    chat_id,
-                    message_id,
-                    panel_text,
-                    buttons=buttons,
+                    chat_id, message_id,
+                    panel_text, buttons=buttons,
                     parse_mode='markdown'
                 )
                 return message_id
-            except:
-                pass
-        
-        # ارسال پنل با @RipperSelfbot
-        sent_msg = await client.send_message(
-            chat_id,
-            panel_text,
+            except Exception as e:
+                print(f"خطا در ویرایش: {e}")
+
+        sent = await client.send_message(
+            chat_id, panel_text,
             buttons=buttons,
             parse_mode='markdown'
         )
-        
-        return sent_msg.id
-        
+        return sent.id
     except Exception as e:
         print(f"خطا در ارسال پنل: {e}")
         return None
 
 async def show_self_panel(client, event):
+    """نمایش پنل وقتی کاربر می‌نویسه 'پنل'"""
     try:
         user_id = event.sender_id
-        
+
         if not has_active_subscription(user_id):
-            await client.send_message(
-                event.message.peer_id,
-                "**❌ شما اشتراک فعال ندارید!**\n**💳 لطفا اشتراک خریداری کنید.**",
-                parse_mode='markdown'
-            )
+            try:
+                await client.send_message(
+                    event.message.peer_id,
+                    "**❌ شما اشتراک فعال ندارید!**\n**💳 لطفاً اشتراک خریداری کنید.**",
+                    parse_mode='markdown'
+                )
+            except:
+                pass
             return
-        
-        # حذف پیام کاربر (پنل)
+
+        # حذف پیام کاربر
         try:
             await client.delete_messages(event.message.peer_id, [event.message.id])
-        except:
-            pass
-        
-        # ارسال پنل جدید
+        except Exception as e:
+            print(f"حذف پیام ناموفق: {e}")
+
+        # ارسال پنل
         await send_self_panel(client, user_id, event.message.peer_id)
-        
     except Exception as e:
         print(f"خطا در نمایش پنل: {e}")
 
 async def handle_self_callback(event, client):
+    """هندل دکمه‌های پنل سلف"""
     try:
         data = event.data.decode('utf-8')
         parts = data.split('_')
-        
+
         if len(parts) < 3:
             return
-        
+
         action = parts[1]
         user_id = int(parts[2])
-        
+
         settings = db_get_self_settings(user_id)
-        
+
         toggle_map = {
-            'clock': 'clock_enabled',
-            'auto_read': 'auto_read',
-            'auto_reply': 'auto_reply',
-            'anti_insult': 'anti_insult',
-            'animated_msg': 'animated_msg',
-            'smart_secretary': 'smart_secretary',
-            'bio': 'bio',
-            'name': 'name_setting',
-            'analytics': 'analytics',
-            'about': 'about',
-            'title': 'title',
-            'anti_login': 'anti_login',
-            'auto': 'auto_setting',
-            'banner': 'banner',
-            'comment': 'comment',
-            'birthday': 'birthday',
-            'alert': 'alert',
-            'classic': 'classic',
-            'modern': 'modern',
-            'persian': 'persian',
-            'english': 'english',
-            'region': 'region',
-            'public_self': 'public_self'
+            'clock': 'clock_enabled', 'auto_read': 'auto_read',
+            'auto_reply': 'auto_reply', 'anti_insult': 'anti_insult',
+            'animated_msg': 'animated_msg', 'smart_secretary': 'smart_secretary',
+            'bio': 'bio', 'name': 'name_setting', 'analytics': 'analytics',
+            'about': 'about', 'title': 'title', 'anti_login': 'anti_login',
+            'auto': 'auto_setting', 'banner': 'banner', 'comment': 'comment',
+            'birthday': 'birthday', 'alert': 'alert',
+            'classic': 'classic', 'modern': 'modern',
+            'persian': 'persian', 'english': 'english',
+            'region': 'region', 'public_self': 'public_self'
         }
-        
+
         if action in toggle_map:
             key = toggle_map[action]
             settings[key] = not settings.get(key, False)
-            
+
+            # منطق انحصاری
             if key == 'classic' and settings['classic']:
                 settings['modern'] = False
             elif key == 'modern' and settings['modern']:
                 settings['classic'] = False
-            
+
             if key == 'persian' and settings['persian']:
                 settings['english'] = False
             elif key == 'english' and settings['english']:
                 settings['persian'] = False
-            
+
             db_update_self_settings(user_id, settings)
-            
+
+            # اجرای عملیات ساعت
             if key == 'clock_enabled':
                 set_clock_status(user_id, settings['clock_enabled'])
                 if settings['clock_enabled']:
-                    await set_clock_on_profile(user_id)
+                    asyncio.create_task(set_clock_on_profile(user_id))
                 else:
-                    await remove_clock_from_profile(user_id)
-            
-            chat_id = event.chat_id
-            message_id = event.message_id
-            
-            await send_self_panel(client, user_id, chat_id, message_id)
-            
-            await event.answer("✅ تغییرات اعمال شد!")
+                    asyncio.create_task(remove_clock_from_profile(user_id))
+
+            # ویرایش پنل
+            await send_self_panel(
+                client, user_id,
+                event.chat_id,
+                event.message_id
+            )
+
+            await event.answer("✅ تغییر اعمال شد!")
             return
-        
+
         if action == 'refresh':
-            chat_id = event.chat_id
-            message_id = event.message_id
-            await send_self_panel(client, user_id, chat_id, message_id)
+            await send_self_panel(
+                client, user_id,
+                event.chat_id,
+                event.message_id
+            )
             await event.answer("🔄 پنل بروزرسانی شد!")
             return
-        
+
         if action == 'close':
             try:
                 await client.delete_messages(event.chat_id, [event.message_id])
             except:
                 pass
-            await event.answer("❌ پنل بسته شد!")
+            await event.answer("✖️ پنل بسته شد!")
             return
-        
+
     except Exception as e:
-        print(f"خطا در هندلر کالبک سلف: {e}")
+        print(f"خطا در هندلر کال‌بک سلف: {e}")
         try:
             await event.answer("❌ خطا!")
         except:
             pass
 
-# ==================== SELF CLIENTS ====================
-
+# ==================== SELF CLIENT ====================
 async def start_salf_client(user_id):
+    """شروع کلاینت سلف کاربر با هندلرها"""
     try:
         session_data = get_user_session(user_id)
         if not session_data:
             return False
-        
+
+        # قطع کلاینت قبلی
         if user_id in salf_clients:
             try:
                 await salf_clients[user_id].disconnect()
             except:
                 pass
             del salf_clients[user_id]
-        
+        if user_id in self_tasks:
+            self_tasks[user_id].cancel()
+            try:
+                await self_tasks[user_id]
+            except:
+                pass
+            del self_tasks[user_id]
+
         client = TelegramClient(
             f"sessions/user_{user_id}",
             session_data['api_id'],
             session_data['api_hash']
         )
         await client.connect()
-        
+
         if not await client.is_user_authorized():
-            try:
-                await client.sign_in(session_data['phone'])
-            except SessionPasswordNeededError:
-                for admin_id in ADMIN_IDS:
-                    try:
-                        await client.send_message(
-                            admin_id,
-                            "⚠️ اکانت کاربر دارای سیستم تایید دو مرحله‌ای (2FA) است.\n🗝 لطفاً رمز عبور اختصاصی را وارد کنید:"
-                        )
-                    except:
-                        pass
-                return False
-            except:
-                await client.disconnect()
-                return False
-        
+            await client.disconnect()
+            return False
+
+        me = await client.get_me()
+        my_id = me.id
         salf_clients[user_id] = client
-        
-        @client.on(events.MessageEdited)
+
+        # ============ هندلر پیام‌ها ============
         @client.on(events.NewMessage)
-        async def panel_handler(event):
-            if event.sender_id == user_id:
-                if event.message and event.message.text:
-                    if event.message.text.strip() == "پنل":
-                        await show_self_panel(client, event)
-        
+        async def message_handler(event):
+            try:
+                if event.sender_id != my_id:
+                    return
+                msg = event.message
+                if not msg or not msg.text:
+                    return
+
+                text = msg.text.strip()
+
+                # دستور پنل
+                if text in ("پنل", ".پنل", "/panel", "/پنل", "Panel", "panel"):
+                    await show_self_panel(client, event)
+                    return
+
+                # دستور بلاک (خروجی)
+                if text in (".بلاک", "بلاک", "/block", "/بلاک"):
+                    await handle_self_block(client, event, my_id)
+                    return
+            except Exception as e:
+                print(f"خطا در هندلر پیام سلف: {e}")
+
+        # ============ هندلر پیام‌های ورودی (بلاک) ============
+        @client.on(events.NewMessage(incoming=True))
+        async def incoming_handler(event):
+            try:
+                msg = event.message
+                if not msg or not msg.text:
+                    return
+                if msg.text.strip() not in (".بلاک", "بلاک", "/block", "/بلاک"):
+                    return
+                await handle_self_block(client, event, my_id, is_incoming=True)
+            except Exception as e:
+                print(f"خطا در هندلر ورودی: {e}")
+
+        # ============ هندلر Callback ============
         @client.on(events.CallbackQuery)
         async def callback_handler(event):
             await handle_self_callback(event, client)
-        
-        await client.run_until_disconnected()
+
+        # ============ اجرا در تسک جداگانه ============
+        async def run_client():
+            try:
+                await client.run_until_disconnected()
+            except Exception as e:
+                print(f"کلاینت قطع شد: {e}")
+
+        task = asyncio.create_task(run_client())
+        self_tasks[user_id] = task
+
+        print(f"✅ سلف کاربر {user_id} راه‌اندازی شد")
         return True
-        
+
     except Exception as e:
-        print(f"خطا در شروع سلف کاربر {user_id}: {e}")
+        print(f"خطا در شروع سلف {user_id}: {e}")
         return False
 
 async def start_all_salf_clients():
+    """شروع همه سلف‌ها در استارتاپ"""
     sessions = db_get_all_sessions()
     for session in sessions:
         user_id = session[0]
-        asyncio.create_task(start_salf_client(user_id))
+        try:
+            await start_salf_client(user_id)
+        except Exception as e:
+            print(f"خطا در شروع سلف {user_id}: {e}")
+        await asyncio.sleep(0.5)
+
+# ==================== بلاک ====================
+async def handle_self_block(client, event, self_user_id, is_incoming=False):
+    """دستور .بلاک — پیوی یا ریپلای"""
+    try:
+        msg = event.message
+        target = None
+
+        # ریپلای
+        if msg.is_reply:
+            try:
+                replied = await event.get_reply_message()
+                if replied and replied.sender_id and replied.sender_id != self_user_id:
+                    target = await client.get_entity(replied.sender_id)
+            except Exception as e:
+                print(f"خطا در ریپلای: {e}")
+
+        # پیوی بدون ریپلای
+        if not target and event.is_private:
+            try:
+                peer = await event.get_chat()
+                if peer and peer.id != self_user_id:
+                    target = peer
+            except Exception as e:
+                print(f"خطا در peer: {e}")
+
+        if not target:
+            try:
+                await event.reply("▸ کاربری برای بلاک پیدا نشد.")
+            except:
+                pass
+            return
+
+        await client(BlockRequest(id=target.id))
+        name = getattr(target, 'first_name', '') or getattr(target, 'username', '') or str(target.id)
+        try:
+            await event.reply(f"▸ کاربر {name} بلاک شد!")
+        except:
+            try:
+                await client.send_message(event.chat_id, f"▸ کاربر {name} بلاک شد!")
+            except:
+                pass
+    except Exception as e:
+        print(f"خطا در بلاک: {e}")
 
 # ==================== CLOCK FUNCTIONS ====================
-
 async def set_clock_on_profile(user_id):
+    """تنظیم ساعت روی اسم پروفایل"""
     try:
         if not get_clock_status(user_id):
             return False
@@ -980,6 +1031,7 @@ async def set_clock_on_profile(user_id):
             return False
         if session_data['api_id'] > 2147483647:
             return False
+
         client = TelegramClient(
             f"sessions/user_{user_id}",
             session_data['api_id'],
@@ -989,17 +1041,21 @@ async def set_clock_on_profile(user_id):
         if not await client.is_user_authorized():
             await client.disconnect()
             return False
+
         me = await client.get_me()
         first_name = me.first_name if me.first_name else ""
         last_name = me.last_name if me.last_name else ""
         current_name = f"{first_name} {last_name}".strip()
         if not current_name:
             current_name = me.username if me.username else "کاربر"
+
         iran_tz = pytz.timezone('Asia/Tehran')
         iran_time = datetime.now(iran_tz)
         time_str = iran_time.strftime('%H:%M')
+
         clean_name = re.sub(r'\s*\d{2}:\d{2}$', '', current_name).strip()
         new_name = f"{clean_name} {time_str}".strip()
+
         if new_name != current_name:
             try:
                 await client(UpdateProfileRequest(first_name=new_name))
@@ -1014,12 +1070,14 @@ async def set_clock_on_profile(user_id):
         return False
 
 async def remove_clock_from_profile(user_id):
+    """حذف ساعت از اسم"""
     try:
         session_data = get_user_session(user_id)
         if not session_data:
             return False
         if session_data['api_id'] > 2147483647:
             return False
+
         client = TelegramClient(
             f"sessions/user_{user_id}",
             session_data['api_id'],
@@ -1029,12 +1087,14 @@ async def remove_clock_from_profile(user_id):
         if not await client.is_user_authorized():
             await client.disconnect()
             return False
+
         me = await client.get_me()
         first_name = me.first_name if me.first_name else ""
         last_name = me.last_name if me.last_name else ""
         current_name = f"{first_name} {last_name}".strip()
         if not current_name:
             current_name = me.username if me.username else "کاربر"
+
         clean_name = re.sub(r'\s*\d{2}:\d{2}$', '', current_name).strip()
         if clean_name != current_name:
             try:
@@ -1049,8 +1109,26 @@ async def remove_clock_from_profile(user_id):
     except:
         return False
 
-# ==================== SERVER INFO ====================
+async def clock_loop(user_id):
+    """حلقه ساعت — هر 30 ثانیه چک می‌کنه"""
+    last_minute = None
+    while True:
+        try:
+            if not get_clock_status(user_id):
+                await asyncio.sleep(30)
+                continue
+            current_minute = datetime.now(pytz.timezone('Asia/Tehran')).strftime('%H:%M')
+            if current_minute != last_minute:
+                await set_clock_on_profile(user_id)
+                last_minute = current_minute
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"خطا در حلقه ساعت {user_id}: {e}")
+            await asyncio.sleep(30)
 
+# ==================== SERVER INFO ====================
 async def get_server_info():
     try:
         ping_time = None
@@ -1072,6 +1150,7 @@ async def get_server_info():
                         ping_time = float(ping_match.group(1))
         except:
             ping_time = None
+
         if ping_time is None:
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1083,22 +1162,26 @@ async def get_server_info():
                 ping_time = (end_time - start_time) * 1000
             except:
                 ping_time = None
+
         cpu_percent = f"{psutil.cpu_percent(interval=0.5):.1f}%"
         memory = psutil.virtual_memory()
         memory_info = f"{memory.percent:.1f}% ({memory.used // (1024**3)}GB / {memory.total // (1024**3)}GB)"
         disk = psutil.disk_usage('/')
         disk_info = f"{disk.percent:.1f}% ({disk.used // (1024**3)}GB / {disk.total // (1024**3)}GB)"
+
         boot_time = psutil.boot_time()
         uptime_seconds = time.time() - boot_time
         days = int(uptime_seconds // 86400)
         hours = int((uptime_seconds % 86400) // 3600)
         minutes = int((uptime_seconds % 3600) // 60)
+
         if days > 0:
             uptime = f"{days} روز، {hours} ساعت، {minutes} دقیقه"
         elif hours > 0:
             uptime = f"{hours} ساعت، {minutes} دقیقه"
         else:
             uptime = f"{minutes} دقیقه"
+
         if ping_time is None:
             status = "🔴 قطع"
         elif ping_time < 50:
@@ -1109,6 +1192,7 @@ async def get_server_info():
             status = "🟡 هشدار"
         else:
             status = "🔴 ضعیف"
+
         return {
             'status': status,
             'ping': f"{ping_time:.1f} ms" if ping_time else "❌ نامشخص",
@@ -1120,12 +1204,9 @@ async def get_server_info():
         }
     except:
         return {
-            'status': "🟢 آنلاین",
-            'ping': "📶 متصل",
-            'cpu': "نامشخص",
-            'memory': "نامشخص",
-            'disk': "نامشخص",
-            'os': platform.system(),
+            'status': "🟢 آنلاین", 'ping': "📶 متصل",
+            'cpu': "نامشخص", 'memory': "نامشخص",
+            'disk': "نامشخص", 'os': platform.system(),
             'uptime': "نامشخص"
         }
 
@@ -1140,57 +1221,52 @@ def get_host_expiry():
             days_left = 0
         expiry_date = start_date + timedelta(days=total_days)
         return {
-            'days_left': days_left,
-            'total_days': total_days,
+            'days_left': days_left, 'total_days': total_days,
             'expiry_date': expiry_date.strftime('%Y-%m-%d'),
             'start_date': start_date.strftime('%Y-%m-%d'),
             'percent': (days_left / total_days) * 100 if days_left > 0 else 0
         }
     except:
         return {
-            'days_left': 26,
-            'total_days': 30,
-            'expiry_date': "2026-08-27",
-            'start_date': "2026-07-28",
+            'days_left': 26, 'total_days': 30,
+            'expiry_date': "2026-08-27", 'start_date': "2026-07-28",
             'percent': 86.6
         }
 
 # ==================== BOT COMMANDS ====================
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user = update.effective_user
     db_add_user(user_id, user.username, user.first_name, user.last_name)
     if is_user_banned(user_id):
         await update.message.reply_text(
-            "<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
+            "▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.",
             parse_mode='HTML'
         )
         return
-    
-    # بررسی اینکه کاربر احراز هویت شده یا نه
-    is_verified = is_user_verified(user_id)
-    
+
     user_mention = f"@{user.username}" if user.username else user.first_name
     if user_id in user_states:
         del user_states[user_id]
     if user_id in user_menu_mode:
         del user_menu_mode[user_id]
+
     if is_admin(user_id):
         text = (
-            f"<b>⚡ درود {user_mention} به پنل ریپر سلف خوش آمدید.</b>\n\n"
-            "<b>🛠️ در این پنل میتوانید ربات را کنترل و مدیریت کنید.</b>\n\n"
-            "<b>🔄 لطفا از منوی زیر انتخاب نمایید.</b>"
+            f"⬢ درود {user_mention} به پنل ریپر سلف خوش آمدید.\n\n"
+            "◆ در این پنل می‌توانید ربات را کنترل و مدیریت کنید.\n\n"
+            "▸ لطفاً از منوی زیر انتخاب نمایید."
         )
         keyboard = [
-            [InlineKeyboardButton("⚙️ تنظیمات", callback_data="admin_settings")],
+            [InlineKeyboardButton("⚙ تنظیمات", callback_data="admin_settings")],
             [InlineKeyboardButton("📊 آمار کل", callback_data="admin_stats")],
-            [InlineKeyboardButton("📡 بررسی پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
+            [InlineKeyboardButton("📡 پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
             [InlineKeyboardButton("👥 منوی کاربران", callback_data="admin_users_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
         return
+
     try:
         chat_member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if chat_member.status in ["member", "administrator", "creator"]:
@@ -1199,22 +1275,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session_data = get_user_session(user_id)
             is_logged_in = session_data is not None
             expiry_date = get_expiry_date(user_id)
+
             text = (
-                f"<b>⚡ سلام {user_mention} به ربات ریپر سلف خوش آمدید!</b>\n\n"
-                "<b>🎯 در این ربات میتوانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!</b>\n\n"
-                "<b>💠 اگر سوالی دارید از بخش پشتیبانی استفاده کنید.</b>"
+                f"⬢ سلام {user_mention} به ربات ریپر سلف خوش آمدید!\n\n"
+                "◆ در این ربات می‌توانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!\n\n"
+                "▸ اگر سوالی دارید از بخش پشتیبانی استفاده کنید."
             )
             keyboard = []
             keyboard.append([InlineKeyboardButton("👨‍💻 پشتیبانی", callback_data="support")])
             keyboard.append([InlineKeyboardButton("🤔 سلف چیست؟", callback_data="what_is_self"), InlineKeyboardButton("📣 کانال ما", url="https://t.me/ReaperSelfChannel")])
             keyboard.append([InlineKeyboardButton(f"📅 انقضا شما: ({remaining_days} روز)", callback_data="expiry")])
-            
-            # اگر احراز هویت شده، دکمه احراز هویت رو نشون نده
-            if is_verified:
+            if is_user_verified(user_id):
                 keyboard.append([InlineKeyboardButton("✅ احراز هویت شده", callback_data="verified_already")])
             else:
-                keyboard.append([InlineKeyboardButton("✔️ احراز هویت", callback_data="verify")])
-            
+                keyboard.append([InlineKeyboardButton("✔ احراز هویت", callback_data="verify")])
             keyboard.append([InlineKeyboardButton("💳 خرید اشتراک", callback_data="buy_subscription")])
             keyboard.append([InlineKeyboardButton("💶 خرید با کد", callback_data="buy_with_code")])
             if has_subscription:
@@ -1225,9 +1299,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
     except:
         pass
+
     text = (
-        "<b>🔗 برای دسترسی به خدمات ما، ابتدا باید در کانال زیر عضو شوید.</b>\n"
-        "<b>✅ پس از عضویت، روی دکمه «عضو شدم» کلیک کنید.</b>"
+        "▸ برای دسترسی به خدمات ما، ابتدا باید در کانال زیر عضو شوید.\n"
+        "▸ پس از عضویت، روی دکمه «عضو شدم» کلیک کنید."
     )
     keyboard = [
         [InlineKeyboardButton("🔗 ریپر سلف", url="https://t.me/ReaperSelfChannel")],
@@ -1243,52 +1318,49 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     if is_user_banned(user_id):
         await query.edit_message_text(
-            "<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
+            "▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.",
             parse_mode='HTML'
         )
         return
-    
-    is_verified = is_user_verified(user_id)
-    
+
     user_mention = f"@{user.username}" if user.username else user.first_name
+
     if is_admin(user_id):
         text = (
-            f"<b>⚡ درود {user_mention} به پنل ریپر سلف خوش آمدید.</b>\n\n"
-            "<b>🛠️ در این پنل میتوانید ربات را کنترل و مدیریت کنید.</b>\n\n"
-            "<b>🔄 لطفا از منوی زیر انتخاب نمایید.</b>"
+            f"⬢ درود {user_mention} به پنل ریپر سلف خوش آمدید.\n\n"
+            "◆ در این پنل می‌توانید ربات را کنترل و مدیریت کنید.\n\n"
+            "▸ لطفاً از منوی زیر انتخاب نمایید."
         )
         keyboard = [
-            [InlineKeyboardButton("⚙️ تنظیمات", callback_data="admin_settings")],
+            [InlineKeyboardButton("⚙ تنظیمات", callback_data="admin_settings")],
             [InlineKeyboardButton("📊 آمار کل", callback_data="admin_stats")],
-            [InlineKeyboardButton("📡 بررسی پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
+            [InlineKeyboardButton("📡 پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
             [InlineKeyboardButton("👥 منوی کاربران", callback_data="admin_users_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
         return
+
     try:
         chat_member = await context.bot.get_chat_member(CHANNEL_USERNAME, user_id)
         if chat_member.status in ["member", "administrator", "creator"]:
             remaining_days = get_remaining_days(user_id)
             has_subscription = has_active_subscription(user_id)
-            session_data = get_user_session(user_id)
-            is_logged_in = session_data is not None
-            expiry_date = get_expiry_date(user_id)
+            is_logged_in = get_user_session(user_id) is not None
+
             text = (
-                f"<b>⚡ سلام {user_mention} به ربات ریپر سلف خوش آمدید!</b>\n\n"
-                "<b>🎯 در این ربات میتوانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!</b>\n\n"
-                "<b>💠 اگر سوالی دارید از بخش پشتیبانی استفاده کنید.</b>"
+                f"⬢ سلام {user_mention} به ربات ریپر سلف خوش آمدید!\n\n"
+                "◆ در این ربات می‌توانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!\n\n"
+                "▸ اگر سوالی دارید از بخش پشتیبانی استفاده کنید."
             )
             keyboard = []
             keyboard.append([InlineKeyboardButton("👨‍💻 پشتیبانی", callback_data="support")])
             keyboard.append([InlineKeyboardButton("🤔 سلف چیست؟", callback_data="what_is_self"), InlineKeyboardButton("📣 کانال ما", url="https://t.me/ReaperSelfChannel")])
             keyboard.append([InlineKeyboardButton(f"📅 انقضا شما: ({remaining_days} روز)", callback_data="expiry")])
-            
-            if is_verified:
+            if is_user_verified(user_id):
                 keyboard.append([InlineKeyboardButton("✅ احراز هویت شده", callback_data="verified_already")])
             else:
-                keyboard.append([InlineKeyboardButton("✔️ احراز هویت", callback_data="verify")])
-            
+                keyboard.append([InlineKeyboardButton("✔ احراز هویت", callback_data="verify")])
             keyboard.append([InlineKeyboardButton("💳 خرید اشتراک", callback_data="buy_subscription")])
             keyboard.append([InlineKeyboardButton("💶 خرید با کد", callback_data="buy_with_code")])
             if has_subscription:
@@ -1298,8 +1370,8 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
         else:
             text = (
-                "<b>🔗 شما هنوز عضو کانال زیر نشده اید!</b>\n"
-                "<b>✅ ابتدا برای استفاده از ربات در کانال زیر عضو شوید!</b>"
+                "▸ شما هنوز عضو کانال زیر نشده‌اید!\n"
+                "▸ ابتدا برای استفاده از ربات در کانال زیر عضو شوید!"
             )
             keyboard = [
                 [InlineKeyboardButton("🔗 ریپر سلف", url="https://t.me/ReaperSelfChannel")],
@@ -1307,31 +1379,31 @@ async def check_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
-    except Exception as e:
+    except:
         await query.answer("❌ خطا در بررسی عضویت!", show_alert=True)
 
 # ==================== SUPPORT ====================
-
 async def support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    
+
     if is_user_banned(user_id):
         await query.edit_message_text(
-            "<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
+            "▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.",
             parse_mode='HTML'
         )
         return
+
     support_mode[user_id] = True
     text = (
-        "<b>⚡ شما با موفقیت به بخش پشتیبانی متصل شدید.</b>\n\n"
-        "<b>⚠️ از ارسال پیام‌های اسپم و تکراری خودداری کنید.</b>\n"
-        "<b>🚫 استفاده از دستورات سلف در این بخش ممنوع بوده و باعث مسدود شدن شما خواهد شد.</b>\n\n"
-        "<b>✍️ اکنون میتوانید پیام یا سوال خود را برای تیم پشتیبانی ارسال کنید.</b>"
+        "⬢ شما با موفقیت به بخش پشتیبانی متصل شدید.\n\n"
+        "⚠ از ارسال پیام‌های اسپم و تکراری خودداری کنید.\n"
+        "🚫 استفاده از دستورات سلف در این بخش ممنوع بوده و باعث مسدود شدن شما خواهد شد.\n\n"
+        "▸ اکنون می‌توانید پیام یا سوال خود را برای تیم پشتیبانی ارسال کنید."
     )
     keyboard = [
-        [InlineKeyboardButton("❌ لغو اتصال", callback_data="disconnect_support")],
+        [InlineKeyboardButton("✖ لغو اتصال", callback_data="disconnect_support")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1344,8 +1416,8 @@ async def disconnect_support(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if user_id in support_mode:
         del support_mode[user_id]
     text = (
-        "<b>⚡ اتصال شما با تیم پشتیبانی با موفقیت قطع شد.</b>\n"
-        "<b>🔙 با استفاده از دکمه زیر میتوانید به منوی اصلی بازگردید.</b>"
+        "⬢ اتصال شما با تیم پشتیبانی با موفقیت قطع شد.\n"
+        "▸ با استفاده از دکمه زیر می‌توانید به منوی اصلی بازگردید."
     )
     keyboard = [
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="main_menu")]
@@ -1358,28 +1430,30 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
     if user_id not in support_mode:
         return
     if is_user_banned(user_id):
-        await update.message.reply_text("<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>", parse_mode='HTML')
+        await update.message.reply_text("▸ شما از طرف مدیریت مسدود شده‌اید!", parse_mode='HTML')
         return
     user = update.effective_user
     user_mention = f"@{user.username}" if user.username else user.first_name
     user_id_str = str(user_id)
     message_text = update.message.text or update.message.caption or "پیام بدون متن"
     ticket_id = db_add_support_ticket(user_id, user_mention, message_text)
+
     iran_tz = pytz.timezone('Asia/Tehran')
     iran_time = datetime.now(iran_tz)
     time_str = iran_time.strftime('%H:%M')
     date_str = iran_time.strftime('%Y-%m-%d')
+
     for admin_id in ADMIN_IDS:
         try:
             admin_text = (
-                f"<b>📩 پیام جدید از بخش پشتیبانی</b>\n\n"
-                f"<b>🆔 شماره تیکت: {ticket_id}</b>\n"
-                f"<b>👤 نام کاربر: {user_mention}</b>\n"
-                f"<b>🆔 آیدی عددی: {user_id_str}</b>\n"
-                f"<b>📝 متن پیام:</b>\n"
+                f"⬢ پیام جدید از بخش پشتیبانی\n\n"
+                f"◆ شماره تیکت: {ticket_id}\n"
+                f"◆ نام کاربر: {user_mention}\n"
+                f"◆ آیدی عددی: {user_id_str}\n"
+                f"◆ متن پیام:\n"
                 f"<code>{message_text}</code>\n\n"
-                f"<b>🕐 ساعت: {time_str}</b>\n"
-                f"<b>📅 تاریخ: {date_str}</b>"
+                f"◆ ساعت: {time_str}\n"
+                f"◆ تاریخ: {date_str}"
             )
             keyboard = [
                 [InlineKeyboardButton("💬 پاسخ به کاربر", callback_data=f"reply_{user_id}")],
@@ -1388,71 +1462,40 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
             reply_markup = InlineKeyboardMarkup(keyboard)
             if update.message.photo:
                 photo = update.message.photo[-1]
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=photo.file_id,
-                    caption=admin_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                await context.bot.send_photo(chat_id=admin_id, photo=photo.file_id, caption=admin_text, reply_markup=reply_markup, parse_mode='HTML')
             elif update.message.document:
                 doc = update.message.document
-                await context.bot.send_document(
-                    chat_id=admin_id,
-                    document=doc.file_id,
-                    caption=admin_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                await context.bot.send_document(chat_id=admin_id, document=doc.file_id, caption=admin_text, reply_markup=reply_markup, parse_mode='HTML')
             elif update.message.video:
                 video = update.message.video
-                await context.bot.send_video(
-                    chat_id=admin_id,
-                    video=video.file_id,
-                    caption=admin_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                await context.bot.send_video(chat_id=admin_id, video=video.file_id, caption=admin_text, reply_markup=reply_markup, parse_mode='HTML')
             else:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                await context.bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=reply_markup, parse_mode='HTML')
         except:
             pass
-    
-    keyboard = [
-        [InlineKeyboardButton("❌ لغو اتصال", callback_data="disconnect_support")]
-    ]
+
+    keyboard = [[InlineKeyboardButton("✖ لغو اتصال", callback_data="disconnect_support")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    
     await update.message.reply_text(
-        "<b>✅ پیام شما با موفقیت به تیم پشتیبانی ارسال شد.</b>\n"
-        "<b>⏳ لطفا صبور باشید و منتظر پاسخ بمانید.</b>\n"
-        "<b>⚠️ از ارسال پیام‌های تکراری و اسپم خودداری فرمایید.</b>",
-        reply_markup=reply_markup,
-        parse_mode='HTML'
+        "⬢ پیام شما با موفقیت به تیم پشتیبانی ارسال شد.\n"
+        "⏳ لطفاً صبور باشید و منتظر پاسخ بمانید.\n"
+        "⚠ از ارسال پیام‌های تکراری و اسپم خودداری فرمایید.",
+        reply_markup=reply_markup, parse_mode='HTML'
     )
 
 # ==================== ADMIN REPLY ====================
-
 async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    
+
     if data.startswith("reply_"):
         user_id = int(data.split("_")[1])
         user_states[query.from_user.id] = f"replying_to_{user_id}"
-        # ویرایش پیام و نمایش پیام پاسخ
         await query.edit_message_text(
-            "<b>💬 پاسخ به کاربر</b>\n\n"
-            "<b>✍️ لطفا پاسخ خود را به صورت متن یا رسانه ارسال کنید.</b>",
+            "⬢ پاسخ به کاربر\n\n▸ لطفاً پاسخ خود را به صورت متن یا رسانه ارسال کنید.",
             parse_mode='HTML'
         )
-        
     elif data.startswith("block_"):
         user_id = int(data.split("_")[1])
         if not is_user_banned(user_id):
@@ -1460,21 +1503,20 @@ async def handle_admin_reply(update: Update, context: ContextTypes.DEFAULT_TYPE)
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
+                    text="▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.",
                     parse_mode='HTML'
                 )
             except:
                 pass
             await query.edit_message_text(
-                f"<b>🚫 کاربر با آیدی {user_id} با موفقیت مسدود شد!</b>\n"
-                f"<b>🔒 کاربر دیگر نمیتواند از ربات استفاده کند.</b>\n\n"
-                f"<b>🔙 بازگشت به منوی اصلی:</b>",
+                f"⬢ کاربر با آیدی {user_id} با موفقیت مسدود شد!\n"
+                "🔒 کاربر دیگر نمی‌تواند از ربات استفاده کند.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]]),
                 parse_mode='HTML'
             )
         else:
             await query.edit_message_text(
-                f"<b>⚠️ کاربر با آیدی {user_id} قبلاً مسدود شده است!</b>",
+                f"⚠ کاربر با آیدی {user_id} قبلاً مسدود شده است!",
                 parse_mode='HTML'
             )
 
@@ -1487,54 +1529,34 @@ async def handle_admin_reply_message(update: Update, context: ContextTypes.DEFAU
         if update.message.text:
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text=f"<b>📩 پاسخ از تیم پشتیبانی:</b>\n\n{update.message.text}",
+                text=f"⬢ پاسخ از تیم پشتیبانی:\n\n{update.message.text}",
                 parse_mode='HTML'
             )
         elif update.message.photo:
             photo = update.message.photo[-1]
-            caption = f"<b>📩 پاسخ از تیم پشتیبانی:</b>\n\n{update.message.caption if update.message.caption else ''}"
-            await context.bot.send_photo(
-                chat_id=target_user_id,
-                photo=photo.file_id,
-                caption=caption,
-                parse_mode='HTML'
-            )
+            caption = f"⬢ پاسخ از تیم پشتیبانی:\n\n{update.message.caption if update.message.caption else ''}"
+            await context.bot.send_photo(chat_id=target_user_id, photo=photo.file_id, caption=caption, parse_mode='HTML')
         elif update.message.document:
             doc = update.message.document
-            caption = f"<b>📩 پاسخ از تیم پشتیبانی:</b>\n\n{update.message.caption if update.message.caption else ''}"
-            await context.bot.send_document(
-                chat_id=target_user_id,
-                document=doc.file_id,
-                caption=caption,
-                parse_mode='HTML'
-            )
+            caption = f"⬢ پاسخ از تیم پشتیبانی:\n\n{update.message.caption if update.message.caption else ''}"
+            await context.bot.send_document(chat_id=target_user_id, document=doc.file_id, caption=caption, parse_mode='HTML')
         elif update.message.video:
             video = update.message.video
-            caption = f"<b>📩 پاسخ از تیم پشتیبانی:</b>\n\n{update.message.caption if update.message.caption else ''}"
-            await context.bot.send_video(
-                chat_id=target_user_id,
-                video=video.file_id,
-                caption=caption,
-                parse_mode='HTML'
-            )
+            caption = f"⬢ پاسخ از تیم پشتیبانی:\n\n{update.message.caption if update.message.caption else ''}"
+            await context.bot.send_video(chat_id=target_user_id, video=video.file_id, caption=caption, parse_mode='HTML')
         else:
-            await update.message.reply_text("<b>❌ نوع پیام پشتیبانی نمیشود!</b>", parse_mode='HTML')
+            await update.message.reply_text("❌ نوع پیام پشتیبانی نمی‌شود!", parse_mode='HTML')
             return
-        
         await update.message.reply_text(
-            f"<b>✅ پاسخ شما با موفقیت برای کاربر {target_user_id} ارسال شد.</b>\n"
-            f"<b>💬 پیام شما به کاربر رسید.</b>",
+            f"⬢ پاسخ شما با موفقیت برای کاربر {target_user_id} ارسال شد.\n"
+            "💬 پیام شما به کاربر رسید.",
             parse_mode='HTML'
         )
     except Exception as e:
-        await update.message.reply_text(
-            f"<b>❌ خطا در ارسال پاسخ: {str(e)}</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text(f"❌ خطا در ارسال پاسخ: {str(e)}", parse_mode='HTML')
     del user_states[user_id]
 
 # ==================== ADMIN FUNCTIONS ====================
-
 async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -1556,19 +1578,17 @@ async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     open_tickets = cursor.fetchone()[0]
     conn.close()
     text = (
-        "<b>📊 آمار کل ربات</b>\n\n"
-        f"<b>👥 تعداد کل کاربران: {total_users}</b>\n"
-        f"<b>✅ کاربران احراز هویت شده: {verified_users}</b>\n"
-        f"<b>🚫 کاربران مسدود شده: {banned_users}</b>\n"
-        f"<b>🔢 تعداد کل کدهای سلف: {total_codes}</b>\n"
-        f"<b>✅ کدهای استفاده شده: {used_codes}</b>\n"
-        f"<b>❌ کدهای استفاده نشده: {total_codes - used_codes}</b>\n"
-        f"<b>👥 تعداد سشن‌های ذخیره شده: {total_sessions}</b>\n"
-        f"<b>🎫 تیکت‌های باز پشتیبانی: {open_tickets}</b>\n"
+        "⬢ آمار کل ربات\n\n"
+        f"◆ تعداد کل کاربران: {total_users}\n"
+        f"◆ کاربران احراز هویت شده: {verified_users}\n"
+        f"◆ کاربران مسدود شده: {banned_users}\n"
+        f"◆ تعداد کل کدهای سلف: {total_codes}\n"
+        f"◆ کدهای استفاده شده: {used_codes}\n"
+        f"◆ کدهای استفاده نشده: {total_codes - used_codes}\n"
+        f"◆ تعداد سشن‌های ذخیره شده: {total_sessions}\n"
+        f"◆ تیکت‌های باز پشتیبانی: {open_tickets}\n"
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -1578,19 +1598,19 @@ async def admin_ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     server_info = await get_server_info()
     if server_info:
         text = (
-            "<b>وضعیت پینگ هاست</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
-            f"<b>📡 وضعیت هاست: {server_info['status']}</b>\n"
-            f"<b>⚡ پینگ: {server_info['ping']}</b>\n"
-            f"<b>💻 سی‌پی‌یو: {server_info['cpu']}</b>\n"
-            f"<b>🧠 رم: {server_info['memory']}</b>\n"
-            f"<b>💾 هارد: {server_info['disk']}</b>\n"
-            f"<b>🖥️ سیستم‌عامل: {server_info['os']}</b>\n"
-            f"<b>⏱️ آپ‌تایم: {server_info['uptime']}</b>\n"
-            "━━━━━━━━━━━━━━━━━━━━"
+            "◆ وضعیت پینگ هاست\n"
+            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+            f"◆ وضعیت هاست: {server_info['status']}\n"
+            f"◆ پینگ: {server_info['ping']}\n"
+            f"◆ سی‌پی‌یو: {server_info['cpu']}\n"
+            f"◆ رم: {server_info['memory']}\n"
+            f"◆ هارد: {server_info['disk']}\n"
+            f"◆ سیستم‌عامل: {server_info['os']}\n"
+            f"◆ آپ‌تایم: {server_info['uptime']}\n"
+            "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰"
         )
     else:
-        text = "<b>❌ خطا در دریافت اطلاعات سرور!</b>"
+        text = "❌ خطا در دریافت اطلاعات سرور!"
     keyboard = [
         [InlineKeyboardButton("🔄 بروزرسانی پینگ", callback_data="admin_ping")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]
@@ -1610,20 +1630,20 @@ async def admin_host(update: Update, context: ContextTypes.DEFAULT_TYPE):
     filled = int((percent / 100) * bar_length) if percent > 0 else 0
     bar = "█" * filled + "░" * (bar_length - filled)
     text = (
-        "<b>⏳ اطلاعات اعتبار هاست</b>\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        f"<b>📅 تاریخ شروع: {host_info['start_date']}</b>\n"
-        f"<b>📆 تاریخ انقضا: {host_info['expiry_date']}</b>\n"
-        f"<b>⏱️ روزهای باقی‌مانده: {host_info['days_left']} روز</b>\n"
-        f"<b>📊 وضعیت: {bar} {percent:.1f}%</b>\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
+        "◆ اطلاعات اعتبار هاست\n\n"
+        "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
+        f"◆ تاریخ شروع: {host_info['start_date']}\n"
+        f"◆ تاریخ انقضا: {host_info['expiry_date']}\n"
+        f"◆ روزهای باقی‌مانده: {host_info['days_left']} روز\n"
+        f"◆ وضعیت: {bar} {percent:.1f}%\n"
+        "▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰▰\n"
     )
     if host_info['days_left'] <= 0:
-        text += "\n<b>⚠️ هاست شما منقضی شده است! لطفا تمدید کنید.</b>"
+        text += "\n⚠ هاست شما منقضی شده است! لطفاً تمدید کنید."
     elif host_info['days_left'] <= 5:
-        text += "\n<b>⚠️ هاست شما به زودی منقضی میشود! لطفا تمدید کنید.</b>"
+        text += "\n⚠ هاست شما به زودی منقضی می‌شود! لطفاً تمدید کنید."
     else:
-        text += "\n<b>✅ هاست شما فعال است.</b>"
+        text += "\n▸ هاست شما فعال است."
     keyboard = [
         [InlineKeyboardButton("🔄 بروزرسانی", callback_data="admin_host")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]
@@ -1640,34 +1660,27 @@ async def show_user_menu(update, context, query):
     remaining_days = get_remaining_days(user_id)
     has_subscription = has_active_subscription(user_id)
     is_verified = is_user_verified(user_id)
-    
+
     text = (
-        f"<b>⚡ سلام {user_mention} به ربات ریپر سلف خوش آمدید!</b>\n\n"
-        "<b>🎯 در این ربات میتوانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!</b>\n\n"
-        "<b>💠 اگر سوالی دارید از بخش پشتیبانی استفاده کنید.</b>"
+        f"⬢ سلام {user_mention} به ربات ریپر سلف خوش آمدید!\n\n"
+        "◆ در این ربات می‌توانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!\n\n"
+        "▸ اگر سوالی دارید از بخش پشتیبانی استفاده کنید."
     )
-    
     keyboard = []
     keyboard.append([InlineKeyboardButton("👨‍💻 پشتیبانی", callback_data="support")])
     keyboard.append([InlineKeyboardButton("🤔 سلف چیست؟", callback_data="what_is_self"), InlineKeyboardButton("📣 کانال ما", url="https://t.me/ReaperSelfChannel")])
     keyboard.append([InlineKeyboardButton(f"📅 انقضا شما: ({remaining_days} روز)", callback_data="expiry")])
-    
     if is_verified:
         keyboard.append([InlineKeyboardButton("✅ احراز هویت شده", callback_data="verified_already")])
     else:
-        keyboard.append([InlineKeyboardButton("✔️ احراز هویت", callback_data="verify")])
-    
+        keyboard.append([InlineKeyboardButton("✔ احراز هویت", callback_data="verify")])
     keyboard.append([InlineKeyboardButton("💳 خرید اشتراک", callback_data="buy_subscription")])
     keyboard.append([InlineKeyboardButton("💶 خرید با کد", callback_data="buy_with_code")])
-    
     if has_subscription:
         keyboard.append([InlineKeyboardButton("🔑 ورود سلف", callback_data="salf_login")])
-    
     keyboard.append([InlineKeyboardButton("💎 نرخ", callback_data="rate")])
-    
     if is_admin(user_id):
         keyboard.append([InlineKeyboardButton("🎈 پنل مدیریت", callback_data="admin_back")])
-    
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -1683,16 +1696,15 @@ async def admin_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_mention = f"@{query.from_user.username}" if query.from_user.username else query.from_user.first_name
     text = (
-        f"<b>⚡ درود {user_mention} به بخش تنظیمات پنل مدیریت خوش آمدید.</b>\n\n"
-        "<b>🛠️ در این بخش میتوانید تمامی تنظیمات و مدیریت ربات را انجام دهید.</b>\n\n"
-        "<b>🔄 لطفا از منوی زیر یکی از گزینه‌های مورد نظر خود را انتخاب نمایید.</b>"
+        f"⬢ درود {user_mention} به بخش تنظیمات پنل مدیریت خوش آمدید.\n\n"
+        "◆ در این بخش می‌توانید تمامی تنظیمات و مدیریت ربات را انجام دهید.\n\n"
+        "▸ لطفاً از منوی زیر یکی از گزینه‌های مورد نظر خود را انتخاب نمایید."
     )
     keyboard = [
-        [InlineKeyboardButton("➕ ساختن کد سلف", callback_data="admin_create_code"), InlineKeyboardButton("❌ باطل کردن کد سلف", callback_data="admin_cancel_code")],
+        [InlineKeyboardButton("➕ ساختن کد سلف", callback_data="admin_create_code"), InlineKeyboardButton("✖ باطل کردن کد سلف", callback_data="admin_cancel_code")],
         [InlineKeyboardButton("🚫 مسدود کردن کاربر", callback_data="admin_block_user"), InlineKeyboardButton("✅ آزاد کردن کاربر", callback_data="admin_unblock_user")],
         [InlineKeyboardButton("📤 انتقال انقضا", callback_data="admin_transfer_credit"), InlineKeyboardButton("📉 کسر انقضا", callback_data="admin_deduct_credit")],
         [InlineKeyboardButton("🔑 ورود سلف", callback_data="admin_salf_login"), InlineKeyboardButton("🚪 خروج سلف", callback_data="admin_salf_logout")],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1703,16 +1715,15 @@ async def admin_settings_back(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_mention = f"@{query.from_user.username}" if query.from_user.username else query.from_user.first_name
     text = (
-        f"<b>⚡ درود {user_mention} به بخش تنظیمات پنل مدیریت خوش آمدید.</b>\n\n"
-        "<b>🛠️ در این بخش میتوانید تمامی تنظیمات و مدیریت ربات را انجام دهید.</b>\n\n"
-        "<b>🔄 لطفا از منوی زیر یکی از گزینه‌های مورد نظر خود را انتخاب نمایید.</b>"
+        f"⬢ درود {user_mention} به بخش تنظیمات پنل مدیریت خوش آمدید.\n\n"
+        "◆ در این بخش می‌توانید تمامی تنظیمات و مدیریت ربات را انجام دهید.\n\n"
+        "▸ لطفاً از منوی زیر یکی از گزینه‌های مورد نظر خود را انتخاب نمایید."
     )
     keyboard = [
-        [InlineKeyboardButton("➕ ساختن کد سلف", callback_data="admin_create_code"), InlineKeyboardButton("❌ باطل کردن کد سلف", callback_data="admin_cancel_code")],
+        [InlineKeyboardButton("➕ ساختن کد سلف", callback_data="admin_create_code"), InlineKeyboardButton("✖ باطل کردن کد سلف", callback_data="admin_cancel_code")],
         [InlineKeyboardButton("🚫 مسدود کردن کاربر", callback_data="admin_block_user"), InlineKeyboardButton("✅ آزاد کردن کاربر", callback_data="admin_unblock_user")],
         [InlineKeyboardButton("📤 انتقال انقضا", callback_data="admin_transfer_credit"), InlineKeyboardButton("📉 کسر انقضا", callback_data="admin_deduct_credit")],
         [InlineKeyboardButton("🔑 ورود سلف", callback_data="admin_salf_login"), InlineKeyboardButton("🚪 خروج سلف", callback_data="admin_salf_logout")],
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1722,47 +1733,41 @@ async def admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    
     if user_id in user_states:
         del user_states[user_id]
     if user_id in admin_salf_data:
         del admin_salf_data[user_id]
-    
     user_mention = f"@{query.from_user.username}" if query.from_user.username else query.from_user.first_name
-    
     text = (
-        f"<b>⚡ درود {user_mention} به پنل ریپر سلف خوش آمدید.</b>\n\n"
-        "<b>🛠️ در این پنل میتوانید ربات را کنترل و مدیریت کنید.</b>\n\n"
-        "<b>🔄 لطفا از منوی زیر انتخاب نمایید.</b>"
+        f"⬢ درود {user_mention} به پنل ریپر سلف خوش آمدید.\n\n"
+        "◆ در این پنل می‌توانید ربات را کنترل و مدیریت کنید.\n\n"
+        "▸ لطفاً از منوی زیر انتخاب نمایید."
     )
     keyboard = [
-        [InlineKeyboardButton("⚙️ تنظیمات", callback_data="admin_settings")],
+        [InlineKeyboardButton("⚙ تنظیمات", callback_data="admin_settings")],
         [InlineKeyboardButton("📊 آمار کل", callback_data="admin_stats")],
-        [InlineKeyboardButton("📡 بررسی پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
+        [InlineKeyboardButton("📡 پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
         [InlineKeyboardButton("👥 منوی کاربران", callback_data="admin_users_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
 # ==================== USER FUNCTIONS ====================
-
 async def rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = (
-        "<b>⚡ نرخ سلف عبارت است از:</b>\n\n"
-        "<b>💰 ماهانه: 100,000 هزار تومان</b>\n\n"
-        "<b>💰 دو ماهه: 150,000 هزار تومان</b>\n\n"
-        "<b>💰 سه ماهه: 200,000 هزار تومان</b>\n\n"
-        "<b>💰 چهار ماهه: 250,000 هزار تومان</b>\n\n"
-        "<b>💰 پنج ماهه: 300,000 هزار تومان</b>\n\n"
-        "<b>💰 شش ماهه: 350,000 هزار تومان</b>\n\n"
-        "<b>⚠️ سلف فقط بر روی اکانت‌هایی که با شماره ایران هستند نصب میشود.</b>\n\n"
-        "<b>📍 @ReaperSelfChannel</b>"
+        "⬢ نرخ سلف عبارت است از:\n\n"
+        "▸ ماهانه: 100,000 تومان\n"
+        "▸ دو ماهه: 150,000 تومان\n"
+        "▸ سه ماهه: 200,000 تومان\n"
+        "▸ چهار ماهه: 250,000 تومان\n"
+        "▸ پنج ماهه: 300,000 تومان\n"
+        "▸ شش ماهه: 350,000 تومان\n\n"
+        "⚠ سلف فقط بر روی اکانت‌هایی که با شماره ایران هستند نصب می‌شود.\n\n"
+        "📍 @ReaperSelfChannel"
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -1770,24 +1775,22 @@ async def what_is_self(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     text = (
-        "<b>🤖 سلف به رباتی گفته میشود که روی اکانت شما نصب میشود و امکانات خاصی را در اختیار شما میگذارد.</b>\n\n"
-        "<b>✨ از جمله امکانات:</b>\n"
-        "<b>⏰ گذاشتن ساعت با فونت‌های مختلف روی بیو و اسم</b>\n"
-        "<b>👁️ قابلیت تنظیم حالت خوانده شدن خودکار پیام‌ها</b>\n"
-        "<b>🤖 تنظیم حالت پاسخ خودکار</b>\n"
-        "<b>💬 جواب دادن به شخصی که به شما توهین میکند</b>\n"
-        "<b>🎬 پیام انیمیشنی</b>\n"
-        "<b>🧠 منشی هوشمند</b>\n"
-        "<b>📱 دریافت پنل و تنظیمات اکانت هوشمند</b>\n"
-        "<b>🌍 دو زبانه بودن دستورات و جواب‌ها</b>\n"
-        "<b>📁 تغییر نام و کاور فایل‌ها</b>\n"
-        "<b>🔔 اعلان پیام ادیت و حذف شده در پیوی</b>\n"
-        "<b>👤 ذخیره پروفایل‌های جدید و اعلان حذف پروفایل مخاطبین</b>\n\n"
-        "<b>📍 @ReaperSelfChannel</b>"
+        "⬢ سلف به رباتی گفته می‌شود که روی اکانت شما نصب می‌شود و امکانات خاصی را در اختیار شما می‌گذارد.\n\n"
+        "◆ از جمله امکانات:\n"
+        "▸ گذاشتن ساعت با فونت‌های مختلف روی بیو و اسم\n"
+        "▸ قابلیت تنظیم حالت خوانده شدن خودکار پیام‌ها\n"
+        "▸ تنظیم حالت پاسخ خودکار\n"
+        "▸ جواب دادن به شخصی که به شما توهین می‌کند\n"
+        "▸ پیام انیمیشنی\n"
+        "▸ منشی هوشمند\n"
+        "▸ دریافت پنل و تنظیمات اکانت هوشمند\n"
+        "▸ دو زبانه بودن دستورات و جواب‌ها\n"
+        "▸ تغییر نام و کاور فایل‌ها\n"
+        "▸ اعلان پیام ادیت و حذف شده در پیوی\n"
+        "▸ ذخیره پروفایل‌های جدید و اعلان حذف پروفایل مخاطبین\n\n"
+        "📍 @ReaperSelfChannel"
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -1795,10 +1798,8 @@ async def buy_with_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_activation_code"
-    text = "<b>💶 لطفا کد انقضای خریداری شده خود را ارسال کنید.</b>"
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-    ]
+    text = "▸ لطفاً کد انقضای خریداری شده خود را ارسال کنید."
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -1808,55 +1809,51 @@ async def handle_activation_code(update: Update, context: ContextTypes.DEFAULT_T
         return
     code = update.message.text.strip().upper() if update.message.text else ""
     if not code:
-        await update.message.reply_text("<b>❌ لطفا کد را وارد کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً کد را وارد کنید!", parse_mode='HTML')
         return
     code_data, error = validate_code(code)
     if code_data is None:
-        await update.message.reply_text(f"<b>{error}</b>", parse_mode='HTML')
+        await update.message.reply_text(f"{error}", parse_mode='HTML')
         return
     if use_code(code, user_id):
         days = code_data['days']
         remaining_days = get_remaining_days(user_id)
         expiry_date = get_expiry_date(user_id)
         text = (
-            f"<b>✅ کد با موفقیت فعال شد!</b>\n\n"
-            f"<b>📅 {days} روز به اشتراک شما اضافه شد.</b>\n"
-            f"<b>📅 تاریخ انقضا: {expiry_date}</b>\n"
-            f"<b>⏳ روزهای باقی‌مانده: {remaining_days} روز</b>\n\n"
-            "<b>🔑 اکنون میتوانید از دکمه ورود سلف استفاده کنید.</b>"
+            f"⬢ کد با موفقیت فعال شد!\n\n"
+            f"◆ {days} روز به اشتراک شما اضافه شد.\n"
+            f"◆ تاریخ انقضا: {expiry_date}\n"
+            f"◆ روزهای باقی‌مانده: {remaining_days} روز\n\n"
+            "▸ اکنون می‌توانید از دکمه ورود سلف استفاده کنید."
         )
-        keyboard = [
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-        ]
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
         del user_states[user_id]
     else:
-        await update.message.reply_text("<b>❌ خطا در فعال‌سازی کد!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ خطا در فعال‌سازی کد!", parse_mode='HTML')
 
 async def buy_subscription(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    
     if not is_user_verified(user_id):
-        text = "<b>⚠️ برای خرید اشتراک سلف، ابتدا باید احراز هویت کنید.</b>"
+        text = "⚠ برای خرید اشتراک سلف، ابتدا باید احراز هویت کنید."
         keyboard = [
-            [InlineKeyboardButton("✔️ احراز هویت", callback_data="verify")],
+            [InlineKeyboardButton("✔ احراز هویت", callback_data="verify")],
             [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
         return
-    
-    text = "<b>💰 لطفا از گزینه‌های زیر انتخاب نمایید که میخواهید ریپر سلف را برای چند ماه خریداری کنید.</b>"
+    text = "▸ لطفاً از گزینه‌های زیر انتخاب نمایید که می‌خواهید ریپر سلف را برای چند ماه خریداری کنید."
     keyboard = [
-        [InlineKeyboardButton("📆 (1) ماه معادل 100 هزار (تومان)", callback_data="buy_1_month")],
-        [InlineKeyboardButton("📆 (2) ماه معادل 150 هزار (تومان)", callback_data="buy_2_month")],
-        [InlineKeyboardButton("📆 (3) ماه معادل 200 هزار (تومان)", callback_data="buy_3_month")],
-        [InlineKeyboardButton("📆 (4) ماه معادل 250 هزار (تومان)", callback_data="buy_4_month")],
-        [InlineKeyboardButton("📆 (5) ماه معادل 300 هزار (تومان)", callback_data="buy_5_month")],
-        [InlineKeyboardButton("📆 (6) ماه معادل 350 هزار (تومان)", callback_data="buy_6_month")],
+        [InlineKeyboardButton("📆 (1) ماه — 100 هزار تومان", callback_data="buy_1_month")],
+        [InlineKeyboardButton("📆 (2) ماه — 150 هزار تومان", callback_data="buy_2_month")],
+        [InlineKeyboardButton("📆 (3) ماه — 200 هزار تومان", callback_data="buy_3_month")],
+        [InlineKeyboardButton("📆 (4) ماه — 250 هزار تومان", callback_data="buy_4_month")],
+        [InlineKeyboardButton("📆 (5) ماه — 300 هزار تومان", callback_data="buy_5_month")],
+        [InlineKeyboardButton("📆 (6) ماه — 350 هزار تومان", callback_data="buy_6_month")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -1866,17 +1863,12 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    
     if is_user_verified(user_id):
-        await query.answer("✅ شما قبلاً احراز هویت شده اید!", show_alert=True)
+        await query.answer("✅ شما قبلاً احراز هویت شده‌اید!", show_alert=True)
         return
-    
-    text = (
-        "<b>🔐 به منوی احراز هویت خوش آمدید.</b>\n\n"
-        "<b>🔄 لطفا یکی از گزینه‌های زیر را انتخاب نمایید:</b>"
-    )
+    text = "⬢ به منوی احراز هویت خوش آمدید.\n\n▸ لطفاً یکی از گزینه‌های زیر را انتخاب نمایید:"
     keyboard = [
-        [InlineKeyboardButton("❌ حذف کارت", callback_data="delete_card")],
+        [InlineKeyboardButton("✖ حذف کارت", callback_data="delete_card")],
         [InlineKeyboardButton("➕ کارت جدید", callback_data="new_card")],
         [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
     ]
@@ -1885,30 +1877,26 @@ async def verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def verified_already(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("✅ شما قبلاً احراز هویت شده اید!", show_alert=True)
+    await query.answer("✅ شما قبلاً احراز هویت شده‌اید!", show_alert=True)
 
 async def delete_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("❌ کارت شما با موفقیت حذف شد!", show_alert=True)
+    await query.answer("✖ کارت شما با موفقیت حذف شد!", show_alert=True)
 
 async def new_card(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_verify_photo"
     text = (
-        "<b>🔐 به بخش احراز هویت خوش آمدید.</b>\n\n"
-        "<b>⚠️ نکات مهم:</b>\n"
-        "<b>1️⃣ شماره کارت و نام صاحب کارت باید کاملا مشخص و خوانا باشد.</b>\n"
-        "<b>2️⃣ لطفا تاریخ اعتبار و Cvv2 کارت خود را بپوشانید.</b>\n"
-        "<b>3️⃣ فقط با کارتی که احراز هویت میکنید میتوانید خرید انجام دهید.</b>\n"
-        "<b>4️⃣ در صورتی که توانایی ارسال عکس از کارت را ندارید، تنها راه حل ارسال عکس از کارت ملی یا شناسنامه صاحب کارت است.</b>\n\n"
-        "<b>📸 لطفا عکس از کارتی که میخواهید با آن خرید انجام دهید ارسال کنید.</b>"
+        "⬢ به بخش احراز هویت خوش آمدید.\n\n"
+        "⚠ نکات مهم:\n"
+        "1️⃣ شماره کارت و نام صاحب کارت باید کاملاً مشخص و خوانا باشد.\n"
+        "2️⃣ لطفاً تاریخ اعتبار و Cvv2 کارت خود را بپوشانید.\n"
+        "3️⃣ فقط با کارتی که احراز هویت می‌کنید می‌توانید خرید انجام دهید.\n"
+        "4️⃣ در صورتی که توانایی ارسال عکس از کارت را ندارید، تنها راه حل ارسال عکس از کارت ملی یا شناسنامه صاحب کارت است.\n\n"
+        "▸ لطفاً عکس از کارتی که می‌خواهید با آن خرید انجام دهید ارسال کنید."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_verify")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="back_to_verify")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -1917,16 +1905,14 @@ async def handle_verify_photo(update: Update, context: ContextTypes.DEFAULT_TYPE
     if user_id not in user_states or user_states[user_id] != "waiting_for_verify_photo":
         return
     if not update.message.photo:
-        await update.message.reply_text("<b>❌ لطفا فقط عکس ارسال کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً فقط عکس ارسال کنید!", parse_mode='HTML')
         return
-    
     photo = update.message.photo[-1]
     pending_verify[user_id] = {'photo_id': photo.file_id}
     user_states[user_id] = "waiting_for_card_number"
-    
     await update.message.reply_text(
-        "<b>✅ عکس شما با موفقیت دریافت شد.</b>\n"
-        "<b>🔢 لطفا شماره کارت خود را به صورت اعداد انگلیسی وارد کنید.</b>",
+        "⬢ عکس شما با موفقیت دریافت شد.\n"
+        "▸ لطفاً شماره کارت خود را به صورت اعداد انگلیسی وارد کنید.",
         parse_mode='HTML'
     )
 
@@ -1934,76 +1920,57 @@ async def handle_verify_card_number(update: Update, context: ContextTypes.DEFAUL
     user_id = update.effective_user.id
     if user_id not in user_states or user_states[user_id] != "waiting_for_card_number":
         return
-    
     card_number = update.message.text.strip()
     card_number = re.sub(r'[^0-9]', '', card_number)
-    
     if len(card_number) != 16:
         await update.message.reply_text(
-            "<b>❌ شماره کارت باید 16 رقم باشد.</b>\n"
-            "<b>🔢 لطفا شماره کارت خود را بدون فاصله و کاراکتر اضافی وارد کنید.</b>",
+            "❌ شماره کارت باید 16 رقم باشد.\n"
+            "▸ لطفاً شماره کارت خود را بدون فاصله و کاراکتر اضافی وارد کنید.",
             parse_mode='HTML'
         )
         return
-    
     user = update.effective_user
     user_mention = f"@{user.username}" if user.username else user.first_name
     user_id_str = str(user_id)
-    
     photo_id = pending_verify.get(user_id, {}).get('photo_id')
-    
     request_id = db_add_verify_request(user_id, user_mention, card_number, photo_id)
-    
+
     iran_tz = pytz.timezone('Asia/Tehran')
     iran_time = datetime.now(iran_tz)
     time_str = iran_time.strftime('%H:%M')
     date_str = iran_time.strftime('%Y-%m-%d')
-    
+
     for admin_id in ADMIN_IDS:
         try:
             admin_text = (
-                f"<b>🆔 درخواست جدید احراز هویت</b>\n\n"
-                f"<b>🆔 شماره درخواست: {request_id}</b>\n"
-                f"<b>👤 نام کاربر: {user_mention}</b>\n"
-                f"<b>🆔 آیدی عددی: {user_id_str}</b>\n"
-                f"<b>💳 شماره کارت: <code>{card_number}</code></b>\n\n"
-                f"<b>🕐 ساعت: {time_str}</b>\n"
-                f"<b>📅 تاریخ: {date_str}</b>"
+                f"⬢ درخواست جدید احراز هویت\n\n"
+                f"◆ شماره درخواست: {request_id}\n"
+                f"◆ نام کاربر: {user_mention}\n"
+                f"◆ آیدی عددی: {user_id_str}\n"
+                f"◆ شماره کارت: <code>{card_number}</code>\n\n"
+                f"◆ ساعت: {time_str}\n"
+                f"◆ تاریخ: {date_str}"
             )
-            
             keyboard = [
                 [InlineKeyboardButton("✅ پذیرفتن", callback_data=f"accept_verify_{request_id}")],
-                [InlineKeyboardButton("❌ نپذیرفتن", callback_data=f"reject_verify_{request_id}")],
+                [InlineKeyboardButton("✖ نپذیرفتن", callback_data=f"reject_verify_{request_id}")],
                 [InlineKeyboardButton("🚫 مسدود کردن کاربر", callback_data=f"block_{user_id}")],
                 [InlineKeyboardButton("💬 پاسخ به کاربر", callback_data=f"reply_{user_id}")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            
             if photo_id:
-                await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=photo_id,
-                    caption=admin_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                await context.bot.send_photo(chat_id=admin_id, photo=photo_id, caption=admin_text, reply_markup=reply_markup, parse_mode='HTML')
             else:
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=admin_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
+                await context.bot.send_message(chat_id=admin_id, text=admin_text, reply_markup=reply_markup, parse_mode='HTML')
         except Exception as e:
             print(f"خطا در ارسال به ادمین: {e}")
-    
+
     await update.message.reply_text(
-        "<b>✅ درخواست احراز هویت شما با موفقیت به تیم پشتیبانی ارسال شد.</b>\n"
-        "<b>⏳ لطفا صبور باشید و منتظر تایید از سوی تیم پشتیبانی بمانید.</b>\n"
-        "<b>⚠️ از ارسال درخواست‌های تکراری خودداری فرمایید.</b>",
+        "⬢ درخواست احراز هویت شما با موفقیت به تیم پشتیبانی ارسال شد.\n"
+        "⏳ لطفاً صبور باشید و منتظر تایید از سوی تیم پشتیبانی بمانید.\n"
+        "⚠ از ارسال درخواست‌های تکراری خودداری فرمایید.",
         parse_mode='HTML'
     )
-    
     if user_id in pending_verify:
         del pending_verify[user_id]
     if user_id in user_states:
@@ -2027,25 +1994,21 @@ async def accept_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="<b>✅ درخواست احراز هویت شما با موفقیت توسط مدیریت پذیرفته شد.</b>\n\n<b>🎉 تبریک! شما اکنون احراز هویت شده اید.</b>",
+                    text="⬢ درخواست احراز هویت شما با موفقیت توسط مدیریت پذیرفته شد.\n\n🎉 تبریک! شما اکنون احراز هویت شده‌اید.",
                     parse_mode='HTML'
                 )
             except:
                 pass
             await query.edit_message_text(
-                f"<b>✅ درخواست احراز هویت کاربر {username} با موفقیت پذیرفته شد.</b>\n"
-                f"<b>🎉 کاربر احراز هویت شد.</b>\n\n"
-                f"<b>🔙 برای بازگشت کلیک کنید:</b>",
+                f"⬢ درخواست احراز هویت کاربر {username} با موفقیت پذیرفته شد.\n"
+                "🎉 کاربر احراز هویت شد.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]]),
                 parse_mode='HTML'
             )
         else:
-            await query.edit_message_text(
-                f"<b>⚠️ کاربر قبلاً احراز هویت شده است!</b>",
-                parse_mode='HTML'
-            )
+            await query.edit_message_text("⚠ کاربر قبلاً احراز هویت شده است!", parse_mode='HTML')
     else:
-        await query.edit_message_text("<b>❌ درخواست یافت نشد!</b>", parse_mode='HTML')
+        await query.edit_message_text("❌ درخواست یافت نشد!", parse_mode='HTML')
 
 async def reject_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2063,20 +2026,19 @@ async def reject_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(
                 chat_id=user_id,
-                text="<b>❌ درخواست احراز هویت شما توسط مدیریت پذیرفته نشد.</b>\n\n<b>🔄 لطفا دوباره تلاش کنید و اطلاعات صحیح را ارسال نمایید.</b>",
+                text="✖ درخواست احراز هویت شما توسط مدیریت پذیرفته نشد.\n\n▸ لطفاً دوباره تلاش کنید و اطلاعات صحیح را ارسال نمایید.",
                 parse_mode='HTML'
             )
         except:
             pass
         await query.edit_message_text(
-            f"<b>❌ درخواست احراز هویت کاربر {username} با موفقیت رد شد.</b>\n"
-            f"<b>⛔ کاربر تایید نشد.</b>\n\n"
-            f"<b>🔙 برای بازگشت کلیک کنید:</b>",
+            f"✖ درخواست احراز هویت کاربر {username} با موفقیت رد شد.\n"
+            "⛔ کاربر تایید نشد.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="admin_back")]]),
             parse_mode='HTML'
         )
     else:
-        await query.edit_message_text("<b>❌ درخواست یافت نشد!</b>", parse_mode='HTML')
+        await query.edit_message_text("❌ درخواست یافت نشد!", parse_mode='HTML')
 
 async def back_to_verify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -2094,19 +2056,16 @@ async def back_from_user_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     await show_user_menu(update, context, query)
 
 # ==================== BLOCK/UNBLOCK ====================
-
 async def admin_block_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_block_user"
     text = (
-        "<b>🚫 مسدود کردن کاربر</b>\n\n"
-        "<b>🔢 لطفا آیدی عددی کاربر مورد نظر برای مسدود سازی را وارد کنید.</b>\n"
-        "<b>⚠️ پس از مسدود شدن، کاربر قادر به استفاده از ربات نخواهد بود.</b>"
+        "⬢ مسدود کردن کاربر\n\n"
+        "▸ لطفاً آیدی عددی کاربر مورد نظر برای مسدودسازی را وارد کنید.\n"
+        "⚠ پس از مسدود شدن، کاربر قادر به استفاده از ربات نخواهد بود."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2115,13 +2074,11 @@ async def admin_unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_unblock_user"
     text = (
-        "<b>✅ آزاد کردن کاربر</b>\n\n"
-        "<b>🔢 لطفا آیدی عددی کاربر مورد نظر برای آزاد سازی از مسدودیت را وارد کنید.</b>\n"
-        "<b>⚠️ پس از آزاد سازی، کاربر دوباره میتواند از ربات استفاده کند.</b>"
+        "⬢ آزاد کردن کاربر\n\n"
+        "▸ لطفاً آیدی عددی کاربر مورد نظر برای آزادسازی از مسدودیت را وارد کنید.\n"
+        "⚠ پس از آزاد سازی، کاربر دوباره می‌تواند از ربات استفاده کند."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2133,31 +2090,28 @@ async def handle_block_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         target_id_int = int(target_id)
     except:
-        await update.message.reply_text("<b>❌ آیدی وارد شده صحیح نیست! لطفا یک عدد معتبر وارد کنید.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ آیدی وارد شده صحیح نیست! لطفاً یک عدد معتبر وارد کنید.", parse_mode='HTML')
         return
     if target_id_int in ADMIN_IDS:
-        await update.message.reply_text("<b>❌ شما نمی‌توانید یک ادمین را مسدود کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ شما نمی‌توانید یک ادمین را مسدود کنید!", parse_mode='HTML')
         return
     if not is_user_banned(target_id_int):
         ban_user(target_id_int)
         try:
             await context.bot.send_message(
                 chat_id=target_id_int,
-                text="<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
+                text="▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.",
                 parse_mode='HTML'
             )
         except:
             pass
         await update.message.reply_text(
-            f"<b>✅ کاربر با آیدی {target_id_int} با موفقیت مسدود شد.</b>\n"
-            "<b>🔒 کاربر دیگر نمیتواند از ربات استفاده کند.</b>",
+            f"⬢ کاربر با آیدی {target_id_int} با موفقیت مسدود شد.\n"
+            "🔒 کاربر دیگر نمی‌تواند از ربات استفاده کند.",
             parse_mode='HTML'
         )
     else:
-        await update.message.reply_text(
-            f"<b>⚠️ کاربر با آیدی {target_id_int} قبلاً در لیست مسدودین قرار دارد.</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text(f"⚠ کاربر با آیدی {target_id_int} قبلاً در لیست مسدودین قرار دارد.", parse_mode='HTML')
     del user_states[user_id]
 
 async def handle_unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2168,44 +2122,38 @@ async def handle_unblock_user(update: Update, context: ContextTypes.DEFAULT_TYPE
     try:
         target_id_int = int(target_id)
     except:
-        await update.message.reply_text("<b>❌ آیدی وارد شده صحیح نیست! لطفا یک عدد معتبر وارد کنید.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ آیدی وارد شده صحیح نیست! لطفاً یک عدد معتبر وارد کنید.", parse_mode='HTML')
         return
     if is_user_banned(target_id_int):
         unban_user(target_id_int)
         try:
             await context.bot.send_message(
                 chat_id=target_id_int,
-                text="<b>✅ تبریک! شما از طرف مدیریت از مسدودیت آزاد شدید.</b>\n<b>💠 ضمن پوزش از شما، خوشحالیم که دوباره به جمع ما برگشتید.</b>",
+                text="⬢ تبریک! شما از طرف مدیریت از مسدودیت آزاد شدید.\n▸ ضمن پوزش از شما، خوشحالیم که دوباره به جمع ما برگشتید.",
                 parse_mode='HTML'
             )
         except:
             pass
         await update.message.reply_text(
-            f"<b>✅ کاربر با آیدی {target_id_int} با موفقیت از مسدودیت آزاد شد.</b>\n"
-            "<b>🔓 کاربر دوباره میتواند از ربات استفاده کند.</b>",
+            f"⬢ کاربر با آیدی {target_id_int} با موفقیت از مسدودیت آزاد شد.\n"
+            "🔓 کاربر دوباره می‌تواند از ربات استفاده کند.",
             parse_mode='HTML'
         )
     else:
-        await update.message.reply_text(
-            f"<b>⚠️ کاربر با آیدی {target_id_int} در لیست مسدودین وجود ندارد.</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text(f"⚠ کاربر با آیدی {target_id_int} در لیست مسدودین وجود ندارد.", parse_mode='HTML')
     del user_states[user_id]
 
 # ==================== CODE MANAGEMENT ====================
-
 async def admin_create_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_code_days"
     text = (
-        "<b>➕ ساختن کد سلف جدید</b>\n\n"
-        "<b>🔢 لطفا تعداد روز انقضا را به صورت عدد وارد کنید.</b>\n"
-        "<b>⚠️ عدد وارد شده باید بین 1 تا 100000 باشد.</b>"
+        "⬢ ساختن کد سلف جدید\n\n"
+        "▸ لطفاً تعداد روز انقضا را به صورت عدد وارد کنید.\n"
+        "⚠ عدد وارد شده باید بین 1 تا 100000 باشد."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2214,13 +2162,11 @@ async def admin_cancel_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_cancel_code"
     text = (
-        "<b>❌ باطل کردن کد سلف</b>\n\n"
-        "<b>🔢 لطفا کد سلف مورد نظر برای باطل شدن را وارد کنید.</b>\n"
-        "<b>⚠️ کدهایی که قبلاً استفاده شده اند قابل باطل کردن نیستند.</b>"
+        "⬢ باطل کردن کد سلف\n\n"
+        "▸ لطفاً کد سلف مورد نظر برای باطل شدن را وارد کنید.\n"
+        "⚠ کدهایی که قبلاً استفاده شده‌اند قابل باطل کردن نیستند."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2231,24 +2177,22 @@ async def handle_code_days(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         days = int(update.message.text.strip())
         if days < 1 or days > 100000:
-            await update.message.reply_text("<b>❌ عدد باید بین 1 تا 100000 باشد!</b>", parse_mode='HTML')
+            await update.message.reply_text("❌ عدد باید بین 1 تا 100000 باشد!", parse_mode='HTML')
             return
         new_code, expiry_date = create_new_code(days)
         text = (
-            "<b>✅ کد سلف شما با موفقیت ساخته شد</b>\n\n"
-            f"<b>📝 کد سلف: <code>{new_code}</code></b>\n\n"
-            f"<b>📅 تاریخ انقضا: {expiry_date.strftime('%Y-%m-%d')}</b>\n"
-            f"<b>⏱️ مدت اعتبار: {days} روز</b>\n\n"
-            "<b>💡 برای کپی کردن روی کد کلیک کنید.</b>"
+            "⬢ کد سلف شما با موفقیت ساخته شد\n\n"
+            f"▸ کد سلف: <code>{new_code}</code>\n\n"
+            f"▸ تاریخ انقضا: {expiry_date.strftime('%Y-%m-%d')}\n"
+            f"▸ مدت اعتبار: {days} روز\n\n"
+            "▸ برای کپی کردن روی کد کلیک کنید."
         )
-        keyboard = [
-            [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-        ]
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
         del user_states[user_id]
     except ValueError:
-        await update.message.reply_text("<b>❌ لطفا یک عدد معتبر وارد کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً یک عدد معتبر وارد کنید!", parse_mode='HTML')
 
 async def handle_cancel_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2257,30 +2201,27 @@ async def handle_cancel_code(update: Update, context: ContextTypes.DEFAULT_TYPE)
     code = update.message.text.strip().upper()
     existing = db_get_code(code)
     if not existing:
-        await update.message.reply_text("<b>❌ کد وارد شده صحیح نیست!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ کد وارد شده صحیح نیست!", parse_mode='HTML')
         return
     if existing[4] == 1:
-        await update.message.reply_text("<b>❌ این کد قبلاً استفاده شده و قابل باطل کردن نیست!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ این کد قبلاً استفاده شده و قابل باطل کردن نیست!", parse_mode='HTML')
     else:
         db_delete_code(code)
-        await update.message.reply_text(f"<b>✅ کد <code>{code}</code> با موفقیت باطل شد!</b>", parse_mode='HTML')
+        await update.message.reply_text(f"⬢ کد <code>{code}</code> با موفقیت باطل شد!", parse_mode='HTML')
     del user_states[user_id]
 
 # ==================== CREDIT MANAGEMENT ====================
-
 async def admin_transfer_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_transfer_credit"
     text = (
-        "<b>📤 انتقال انقضا</b>\n\n"
-        "<b>🔢 لطفا آیدی عددی کاربر مبدا، آیدی عددی کاربر مقصد و مقدار روز را وارد کنید.</b>\n"
-        "<b>⚠️ این عملیات غیرقابل بازگشت است.</b>\n"
-        "<b>📝 مثال: 123456789 987654321 30</b>"
+        "⬢ انتقال انقضا\n\n"
+        "▸ لطفاً آیدی عددی کاربر مبدا، آیدی عددی کاربر مقصد و مقدار روز را وارد کنید.\n"
+        "⚠ این عملیات غیرقابل بازگشت است.\n"
+        "▸ مثال: 123456789 987654321 30"
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2289,14 +2230,12 @@ async def admin_deduct_credit(update: Update, context: ContextTypes.DEFAULT_TYPE
     await query.answer()
     user_states[query.from_user.id] = "waiting_for_deduct_credit"
     text = (
-        "<b>📉 کسر انقضا</b>\n\n"
-        "<b>🔢 لطفا آیدی عددی کاربر و مقدار روز مورد نظر برای کسر را وارد کنید.</b>\n"
-        "<b>⚠️ این عملیات غیرقابل بازگشت است.</b>\n"
-        "<b>📝 مثال: 123456789 10</b>"
+        "⬢ کسر انقضا\n\n"
+        "▸ لطفاً آیدی عددی کاربر و مقدار روز مورد نظر برای کسر را وارد کنید.\n"
+        "⚠ این عملیات غیرقابل بازگشت است.\n"
+        "▸ مثال: 123456789 10"
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2307,20 +2246,18 @@ async def handle_transfer_credit(update: Update, context: ContextTypes.DEFAULT_T
     parts = update.message.text.strip().split()
     if len(parts) != 3:
         await update.message.reply_text(
-            "<b>❌ فرمت وارد شده صحیح نیست!</b>\n"
-            "<b>📝 لطفا به این صورت وارد کنید: آیدی_مبدا آیدی_مقصد تعداد_روز</b>",
+            "❌ فرمت وارد شده صحیح نیست!\n"
+            "▸ لطفاً به این صورت وارد کنید: آیدی_مبدا آیدی_مقصد تعداد_روز",
             parse_mode='HTML'
         )
         return
     try:
-        from_id = int(parts[0])
-        to_id = int(parts[1])
-        days = int(parts[2])
+        from_id = int(parts[0]); to_id = int(parts[1]); days = int(parts[2])
     except:
-        await update.message.reply_text("<b>❌ مقادیر وارد شده صحیح نیست! لطفا اعداد معتبر وارد کنید.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ مقادیر وارد شده صحیح نیست! لطفاً اعداد معتبر وارد کنید.", parse_mode='HTML')
         return
     if days <= 0:
-        await update.message.reply_text("<b>❌ تعداد روز باید بیشتر از صفر باشد.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ تعداد روز باید بیشتر از صفر باشد.", parse_mode='HTML')
         return
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -2328,52 +2265,33 @@ async def handle_transfer_credit(update: Update, context: ContextTypes.DEFAULT_T
     from_data = cursor.fetchone()
     if not from_data or from_data[0] is None or from_data[0] < days:
         conn.close()
-        await update.message.reply_text(
-            f"<b>⚠️ کاربر با آیدی {from_id} به اندازه {days} روز اشتراک فعال ندارد!</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text(f"⚠ کاربر با آیدی {from_id} به اندازه {days} روز اشتراک فعال ندارد!", parse_mode='HTML')
         return
     new_from_days = from_data[0] - days
     if new_from_days == 0:
         new_from_expiry = None
     else:
         new_from_expiry = (datetime.now() + timedelta(days=new_from_days)).isoformat()
-    cursor.execute('UPDATE users SET remaining_days = ?, expiry_date = ? WHERE user_id = ?', 
-                   (new_from_days, new_from_expiry, from_id))
+    cursor.execute('UPDATE users SET remaining_days = ?, expiry_date = ? WHERE user_id = ?', (new_from_days, new_from_expiry, from_id))
     cursor.execute('SELECT remaining_days, expiry_date FROM users WHERE user_id = ?', (to_id,))
     to_data = cursor.fetchone()
     if to_data and to_data[0] is not None:
         new_to_days = to_data[0] + days
         new_to_expiry = (datetime.now() + timedelta(days=new_to_days)).isoformat()
-        cursor.execute('UPDATE users SET remaining_days = ?, expiry_date = ? WHERE user_id = ?',
-                       (new_to_days, new_to_expiry, to_id))
+        cursor.execute('UPDATE users SET remaining_days = ?, expiry_date = ? WHERE user_id = ?', (new_to_days, new_to_expiry, to_id))
     else:
         new_to_days = days
         new_to_expiry = (datetime.now() + timedelta(days=days)).isoformat()
-        cursor.execute('INSERT INTO users (user_id, remaining_days, expiry_date) VALUES (?, ?, ?)',
-                       (to_id, new_to_days, new_to_expiry))
+        cursor.execute('INSERT INTO users (user_id, remaining_days, expiry_date) VALUES (?, ?, ?)', (to_id, new_to_days, new_to_expiry))
     conn.commit()
     conn.close()
     try:
-        await context.bot.send_message(
-            chat_id=from_id,
-            text=f"<b>📤 از طرف مدیریت، {days} روز از اشتراک شما کسر شد.</b>\n<b>📅 انقضای جدید: {new_from_expiry.split('T')[0] if new_from_expiry else 'اشتراک شما به پایان رسید'}</b>",
-            parse_mode='HTML'
-        )
-    except:
-        pass
+        await context.bot.send_message(chat_id=from_id, text=f"▸ از طرف مدیریت، {days} روز از اشتراک شما کسر شد.", parse_mode='HTML')
+    except: pass
     try:
-        await context.bot.send_message(
-            chat_id=to_id,
-            text=f"<b>📤 از طرف مدیریت، {days} روز به اشتراک شما اضافه شد.</b>\n<b>📅 انقضای جدید: {new_to_expiry.split('T')[0]}</b>",
-            parse_mode='HTML'
-        )
-    except:
-        pass
-    await update.message.reply_text(
-        f"<b>✅ انتقال {days} روز از کاربر {from_id} به کاربر {to_id} با موفقیت انجام شد.</b>",
-        parse_mode='HTML'
-    )
+        await context.bot.send_message(chat_id=to_id, text=f"▸ از طرف مدیریت، {days} روز به اشتراک شما اضافه شد.", parse_mode='HTML')
+    except: pass
+    await update.message.reply_text(f"⬢ انتقال {days} روز از کاربر {from_id} به کاربر {to_id} با موفقیت انجام شد.", parse_mode='HTML')
     del user_states[user_id]
 
 async def handle_deduct_credit(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2383,19 +2301,18 @@ async def handle_deduct_credit(update: Update, context: ContextTypes.DEFAULT_TYP
     parts = update.message.text.strip().split()
     if len(parts) != 2:
         await update.message.reply_text(
-            "<b>❌ فرمت وارد شده صحیح نیست!</b>\n"
-            "<b>📝 لطفا به این صورت وارد کنید: آیدی_کاربر تعداد_روز</b>",
+            "❌ فرمت وارد شده صحیح نیست!\n"
+            "▸ لطفاً به این صورت وارد کنید: آیدی_کاربر تعداد_روز",
             parse_mode='HTML'
         )
         return
     try:
-        target_id = int(parts[0])
-        days = int(parts[1])
+        target_id = int(parts[0]); days = int(parts[1])
     except:
-        await update.message.reply_text("<b>❌ مقادیر وارد شده صحیح نیست! لطفا اعداد معتبر وارد کنید.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ مقادیر وارد شده صحیح نیست! لطفاً اعداد معتبر وارد کنید.", parse_mode='HTML')
         return
     if days <= 0:
-        await update.message.reply_text("<b>❌ تعداد روز باید بیشتر از صفر باشد.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ تعداد روز باید بیشتر از صفر باشد.", parse_mode='HTML')
         return
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -2403,50 +2320,35 @@ async def handle_deduct_credit(update: Update, context: ContextTypes.DEFAULT_TYP
     target_data = cursor.fetchone()
     if not target_data or target_data[0] is None or target_data[0] == 0:
         conn.close()
-        await update.message.reply_text(
-            f"<b>⚠️ کاربر با آیدی {target_id} اشتراک فعالی ندارد!</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text(f"⚠ کاربر با آیدی {target_id} اشتراک فعالی ندارد!", parse_mode='HTML')
         return
     new_days = max(0, target_data[0] - days)
     if new_days == 0:
         new_expiry = None
     else:
         new_expiry = (datetime.now() + timedelta(days=new_days)).isoformat()
-    cursor.execute('UPDATE users SET remaining_days = ?, expiry_date = ? WHERE user_id = ?',
-                   (new_days, new_expiry, target_id))
+    cursor.execute('UPDATE users SET remaining_days = ?, expiry_date = ? WHERE user_id = ?', (new_days, new_expiry, target_id))
     conn.commit()
     conn.close()
     try:
-        await context.bot.send_message(
-            chat_id=target_id,
-            text=f"<b>📉 از طرف مدیریت، {days} روز از اشتراک شما کسر شد.</b>\n<b>📅 انقضای جدید: {new_expiry.split('T')[0] if new_expiry else 'اشتراک شما به پایان رسید'}</b>",
-            parse_mode='HTML'
-        )
-    except:
-        pass
-    await update.message.reply_text(
-        f"<b>✅ {days} روز از اشتراک کاربر {target_id} با موفقیت کسر شد.</b>",
-        parse_mode='HTML'
-    )
+        await context.bot.send_message(chat_id=target_id, text=f"▸ از طرف مدیریت، {days} روز از اشتراک شما کسر شد.", parse_mode='HTML')
+    except: pass
+    await update.message.reply_text(f"⬢ {days} روز از اشتراک کاربر {target_id} با موفقیت کسر شد.", parse_mode='HTML')
     del user_states[user_id]
 
 # ==================== ADMIN SELF LOGIN ====================
-
 async def admin_salf_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     admin_salf_data[query.from_user.id] = {}
     user_states[query.from_user.id] = "admin_waiting_phone"
     text = (
-        "<b>🔑 ورود سلف (مدیریت)</b>\n\n"
-        "<b>📱 لطفا شماره موبایل کاربر را با کد کشور وارد کنید.</b>\n"
-        "<b>📝 مثال: +989123456789</b>\n\n"
-        "<b>⚠️ این بخش مخصوص ورود سلف به اکانت کاربران دیگر توسط مدیریت است.</b>"
+        "⬢ ورود سلف (مدیریت)\n\n"
+        "▸ لطفاً شماره موبایل کاربر را با کد کشور وارد کنید.\n"
+        "▸ مثال: +989123456789\n\n"
+        "⚠ این بخش مخصوص ورود سلف به اکانت کاربران دیگر توسط مدیریت است."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2455,13 +2357,11 @@ async def admin_salf_logout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_states[query.from_user.id] = "admin_waiting_logout_phone"
     text = (
-        "<b>🚪 خروج سلف</b>\n\n"
-        "<b>📱 لطفا شماره تلفن مورد نظر برای خروج سلف را وارد کنید.</b>\n"
-        "<b>⚠️ پس از خروج، سلف از اکانت کاربر خارج خواهد شد و ساعت از اسم او حذف میشود.</b>"
+        "⬢ خروج سلف\n\n"
+        "▸ لطفاً شماره تلفن مورد نظر برای خروج سلف را وارد کنید.\n"
+        "⚠ پس از خروج، سلف از اکانت کاربر خارج خواهد شد و ساعت از اسم او حذف می‌شود."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2471,16 +2371,11 @@ async def admin_handle_salf_phone(update: Update, context: ContextTypes.DEFAULT_
         return
     phone = update.message.text.strip()
     if not phone or not re.match(r'^\+?[0-9]{10,15}$', phone):
-        await update.message.reply_text(
-            "<b>❌ شماره وارد شده صحیح نیست! لطفا با کد کشور وارد کنید.</b>\n"
-            "<b>📝 مثال: +989123456789</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ شماره وارد شده صحیح نیست! لطفاً با کد کشور وارد کنید.\n▸ مثال: +989123456789", parse_mode='HTML')
         return
     admin_salf_data[user_id]['phone'] = phone
     user_states[user_id] = "admin_waiting_user_id"
-    text = "<b>🔑 مرحله 2 از 5</b>\n\n<b>🔢 لطفا آیدی عددی کاربر مورد نظر را وارد کنید.</b>"
-    await update.message.reply_text(text, parse_mode='HTML')
+    await update.message.reply_text("⬢ مرحله 2 از 5\n\n▸ لطفاً آیدی عددی کاربر مورد نظر را وارد کنید.", parse_mode='HTML')
 
 async def admin_handle_salf_logout_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2488,11 +2383,7 @@ async def admin_handle_salf_logout_phone(update: Update, context: ContextTypes.D
         return
     phone = update.message.text.strip()
     if not phone or not re.match(r'^\+?[0-9]{10,15}$', phone):
-        await update.message.reply_text(
-            "<b>❌ شماره وارد شده صحیح نیست! لطفا با کد کشور وارد کنید.</b>\n"
-            "<b>📝 مثال: +989123456789</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ شماره وارد شده صحیح نیست! لطفاً با کد کشور وارد کنید.\n▸ مثال: +989123456789", parse_mode='HTML')
         return
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -2500,18 +2391,12 @@ async def admin_handle_salf_logout_phone(update: Update, context: ContextTypes.D
     result = cursor.fetchone()
     conn.close()
     if not result:
-        await update.message.reply_text("<b>❌ هیچ کاربری با این شماره در سلف یافت نشد!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ هیچ کاربری با این شماره در سلف یافت نشد!", parse_mode='HTML')
         del user_states[user_id]
         return
-    target_user_id = result[0]
-    api_hash = result[1]
-    api_id = result[2]
+    target_user_id = result[0]; api_hash = result[1]; api_id = result[2]
     try:
-        client = TelegramClient(
-            f"sessions/user_{target_user_id}",
-            api_id,
-            api_hash
-        )
+        client = TelegramClient(f"sessions/user_{target_user_id}", api_id, api_hash)
         await client.connect()
         if await client.is_user_authorized():
             me = await client.get_me()
@@ -2524,33 +2409,23 @@ async def admin_handle_salf_logout_phone(update: Update, context: ContextTypes.D
             if clean_name != current_name:
                 try:
                     await client(UpdateProfileRequest(first_name=clean_name))
-                except:
-                    pass
+                except: pass
         await client.disconnect()
-    except:
-        pass
+    except: pass
     delete_user_session(target_user_id)
     set_clock_status(target_user_id, False)
     if target_user_id in salf_clients:
         try:
             await salf_clients[target_user_id].disconnect()
-        except:
-            pass
+        except: pass
         del salf_clients[target_user_id]
+    if target_user_id in self_tasks:
+        self_tasks[target_user_id].cancel()
+        del self_tasks[target_user_id]
     try:
-        await context.bot.send_message(
-            chat_id=target_user_id,
-            text="<b>🚪 ریپر سلف از اکانت شما خارج شد.</b>\n\n<b>⏰ ساعت از روی اسم شما حذف شد.</b>\n<b>🔑 در صورت نیاز مجدداً وارد شوید.</b>",
-            parse_mode='HTML'
-        )
-    except:
-        pass
-    await update.message.reply_text(
-        f"<b>✅ خروج سلف از اکانت کاربر {target_user_id} با موفقیت انجام شد.</b>\n"
-        f"<b>📱 شماره: {phone}</b>\n"
-        "<b>⏰ ساعت از اسم کاربر حذف شد.</b>",
-        parse_mode='HTML'
-    )
+        await context.bot.send_message(chat_id=target_user_id, text="🚪 ریپر سلف از اکانت شما خارج شد.\n\n⏰ ساعت از روی اسم شما حذف شد.", parse_mode='HTML')
+    except: pass
+    await update.message.reply_text(f"⬢ خروج سلف از اکانت کاربر {target_user_id} با موفقیت انجام شد.\n▸ شماره: {phone}", parse_mode='HTML')
     del user_states[user_id]
 
 async def admin_handle_salf_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2561,16 +2436,11 @@ async def admin_handle_salf_user_id(update: Update, context: ContextTypes.DEFAUL
     try:
         target_id_int = int(target_id)
     except:
-        await update.message.reply_text("<b>❌ آیدی وارد شده صحیح نیست! لطفا یک عدد معتبر وارد کنید.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ آیدی وارد شده صحیح نیست! لطفاً یک عدد معتبر وارد کنید.", parse_mode='HTML')
         return
     admin_salf_data[user_id]['target_user_id'] = target_id_int
     user_states[user_id] = "admin_waiting_api_id"
-    text = (
-        "<b>🔑 مرحله 3 از 5</b>\n\n"
-        "<b>🔢 لطفا آیپی عددی (API ID) را وارد کنید.</b>\n"
-        "<b>⚠️ API ID باید عددی بین 1 تا 2147483647 باشد.</b>"
-    )
-    await update.message.reply_text(text, parse_mode='HTML')
+    await update.message.reply_text("⬢ مرحله 3 از 5\n\n▸ لطفاً API ID را وارد کنید.\n⚠ API ID باید عددی بین 1 تا 2147483647 باشد.", parse_mode='HTML')
 
 async def admin_handle_salf_api_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2578,24 +2448,19 @@ async def admin_handle_salf_api_id(update: Update, context: ContextTypes.DEFAULT
         return
     text = update.message.text.strip()
     if not text:
-        await update.message.reply_text("<b>❌ لطفا یک عدد وارد کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً یک عدد وارد کنید!", parse_mode='HTML')
         return
     try:
         api_id = int(text)
         if api_id > 2147483647:
-            await update.message.reply_text(
-                "<b>❌ عدد وارد شده خیلی بزرگ است!</b>\n"
-                "<b>⚠️ API ID باید عددی بین 1 تا 2147483647 باشد.</b>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("❌ عدد وارد شده خیلی بزرگ است!\n⚠ API ID باید عددی بین 1 تا 2147483647 باشد.", parse_mode='HTML')
             return
     except:
-        await update.message.reply_text("<b>❌ آیپی عددی باید عدد باشد!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ API ID باید عدد باشد!", parse_mode='HTML')
         return
     admin_salf_data[user_id]['api_id'] = api_id
     user_states[user_id] = "admin_waiting_api_hash"
-    text = "<b>🔑 مرحله 4 از 5</b>\n\n<b>🔑 لطفا آیپی هش (API Hash) را وارد کنید.</b>"
-    await update.message.reply_text(text, parse_mode='HTML')
+    await update.message.reply_text("⬢ مرحله 4 از 5\n\n▸ لطفاً API Hash را وارد کنید.", parse_mode='HTML')
 
 async def admin_handle_salf_api_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2603,10 +2468,7 @@ async def admin_handle_salf_api_hash(update: Update, context: ContextTypes.DEFAU
         return
     api_hash = update.message.text.strip()
     if not api_hash or len(api_hash) < 20:
-        await update.message.reply_text(
-            "<b>❌ آیپی هش وارد شده صحیح نیست! لطفا دوباره وارد کنید.</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ API Hash وارد شده صحیح نیست! لطفاً دوباره وارد کنید.", parse_mode='HTML')
         return
     admin_salf_data[user_id]['api_hash'] = api_hash
     user_states[user_id] = "admin_waiting_code"
@@ -2618,25 +2480,23 @@ async def admin_handle_salf_api_hash(update: Update, context: ContextTypes.DEFAU
         if not await client.is_user_authorized():
             await client.send_code_request(data['phone'])
             admin_salf_data[user_id]['client'] = client
-            text = (
-                "<b>🔑 مرحله 5 از 5</b>\n\n"
-                f"<b>✅ کد تایید به شماره {data['phone']} ارسال شد.</b>\n"
-                "<b>📝 لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>"
+            await update.message.reply_text(
+                "⬢ مرحله 5 از 5\n\n"
+                f"▸ کد تایید به شماره {data['phone']} ارسال شد.\n"
+                "▸ لطفاً کد را به این صورت بفرستید: <code>1.2.3.4.5</code>",
+                parse_mode='HTML'
             )
-            await update.message.reply_text(text, parse_mode='HTML')
         else:
             await client.disconnect()
-            await update.message.reply_text("<b>❌ این شماره قبلاً در سلف ثبت شده است!</b>", parse_mode='HTML')
+            await update.message.reply_text("❌ این شماره قبلاً در سلف ثبت شده است!", parse_mode='HTML')
             del user_states[user_id]
             del admin_salf_data[user_id]
     except PhoneNumberInvalidError:
-        await update.message.reply_text("<b>❌ شماره وارد شده معتبر نیست!</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del admin_salf_data[user_id]
+        await update.message.reply_text("❌ شماره وارد شده معتبر نیست!", parse_mode='HTML')
+        del user_states[user_id]; del admin_salf_data[user_id]
     except Exception as e:
-        await update.message.reply_text(f"<b>❌ خطا در ارسال کد تایید: {str(e)}</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del admin_salf_data[user_id]
+        await update.message.reply_text(f"❌ خطا در ارسال کد تایید: {str(e)}", parse_mode='HTML')
+        del user_states[user_id]; del admin_salf_data[user_id]
 
 async def admin_handle_salf_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2645,18 +2505,14 @@ async def admin_handle_salf_code(update: Update, context: ContextTypes.DEFAULT_T
     code_input = update.message.text.strip()
     code = code_input.replace('.', '').replace(' ', '').strip()
     if not code or not code.isdigit():
-        await update.message.reply_text(
-            "<b>❌ لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ لطفاً کد را به این صورت بفرستید: <code>1.2.3.4.5</code>", parse_mode='HTML')
         return
     try:
         data = admin_salf_data[user_id]
         client = data.get('client')
         if not client:
-            await update.message.reply_text("<b>❌ خطا در اتصال! لطفا دوباره تلاش کنید.</b>", parse_mode='HTML')
-            del user_states[user_id]
-            del admin_salf_data[user_id]
+            await update.message.reply_text("❌ خطا در اتصال! لطفاً دوباره تلاش کنید.", parse_mode='HTML')
+            del user_states[user_id]; del admin_salf_data[user_id]
             return
         try:
             await client.sign_in(data['phone'], code)
@@ -2675,50 +2531,34 @@ async def admin_handle_salf_code(update: Update, context: ContextTypes.DEFAULT_T
             set_clock_status(data['target_user_id'], True)
             asyncio.create_task(start_salf_client(data['target_user_id']))
             text = (
-                "<b>✅ ورود سلف به اکانت کاربر با موفقیت انجام شد!</b>\n\n"
-                f"<b>👤 نام اکانت: {full_name}</b>\n"
-                f"<b>📱 شماره: {data['phone']}</b>\n"
-                f"<b>🕐 ساعت ورود: {time_str}</b>\n"
-                f"<b>📅 تاریخ ورود: {iran_time.strftime('%Y-%m-%d')}</b>\n"
-                f"<b>🆔 آیدی کاربر: {data['target_user_id']}</b>\n\n"
-                "<b>⏰ ساعت روی اسم اکانت کاربر فعال شد!</b>\n"
-                "<b>✅ پنل سلف فعال شد (با نوشتن کلمه \"پنل\" در هر جایی)</b>"
+                "⬢ ورود سلف به اکانت کاربر با موفقیت انجام شد!\n\n"
+                f"◆ نام اکانت: {full_name}\n"
+                f"◆ شماره: {data['phone']}\n"
+                f"◆ ساعت ورود: {time_str}\n"
+                f"◆ تاریخ ورود: {iran_time.strftime('%Y-%m-%d')}\n"
+                f"◆ آیدی کاربر: {data['target_user_id']}\n\n"
+                "▸ ساعت روی اسم اکانت کاربر فعال شد!\n"
+                "▸ پنل سلف فعال شد (با نوشتن کلمه \"پنل\" در هر جایی)"
             )
-            keyboard = [
-                [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-            ]
+            keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
-            del user_states[user_id]
-            del admin_salf_data[user_id]
+            del user_states[user_id]; del admin_salf_data[user_id]
             return
         except PhoneCodeExpiredError:
-            await update.message.reply_text("<b>⏳ کد منقضی شده بود، در حال ارسال کد جدید...</b>", parse_mode='HTML')
+            await update.message.reply_text("⏳ کد منقضی شده بود، در حال ارسال کد جدید...", parse_mode='HTML')
             await client.send_code_request(data['phone'])
-            await update.message.reply_text(
-                "<b>✅ کد جدید به شماره شما ارسال شد.</b>\n"
-                "<b>📝 لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("⬢ کد جدید به شماره شما ارسال شد.\n▸ لطفاً کد را به این صورت بفرستید: <code>1.2.3.4.5</code>", parse_mode='HTML')
             return
         except PhoneCodeInvalidError:
-            await update.message.reply_text(
-                "<b>❌ کد وارد شده صحیح نیست! لطفا دوباره تلاش کنید.</b>\n"
-                "<b>📝 لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("❌ کد وارد شده صحیح نیست! لطفاً دوباره تلاش کنید.", parse_mode='HTML')
             return
     except SessionPasswordNeededError:
         user_states[user_id] = "admin_waiting_password"
-        await update.message.reply_text(
-            "<b>⚠️ اکانت کاربر دارای سیستم تایید دو مرحله‌ای (2FA) است.</b>\n"
-            "<b>🗝 لطفاً رمز عبور اختصاصی را وارد کنید:</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("⚠ اکانت کاربر دارای سیستم تایید دو مرحله‌ای (2FA) است.\n▸ لطفاً رمز عبور اختصاصی را وارد کنید:", parse_mode='HTML')
     except Exception as e:
-        await update.message.reply_text(f"<b>❌ خطا در ورود: {str(e)}</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del admin_salf_data[user_id]
+        await update.message.reply_text(f"❌ خطا در ورود: {str(e)}", parse_mode='HTML')
+        del user_states[user_id]; del admin_salf_data[user_id]
 
 async def admin_handle_salf_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2726,15 +2566,14 @@ async def admin_handle_salf_password(update: Update, context: ContextTypes.DEFAU
         return
     password = update.message.text.strip()
     if not password:
-        await update.message.reply_text("<b>❌ لطفا پسورد را وارد کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً پسورد را وارد کنید!", parse_mode='HTML')
         return
     try:
         data = admin_salf_data[user_id]
         client = data.get('client')
         if not client:
-            await update.message.reply_text("<b>❌ خطا در اتصال! لطفا دوباره تلاش کنید.</b>", parse_mode='HTML')
-            del user_states[user_id]
-            del admin_salf_data[user_id]
+            await update.message.reply_text("❌ خطا در اتصال! لطفاً دوباره تلاش کنید.", parse_mode='HTML')
+            del user_states[user_id]; del admin_salf_data[user_id]
             return
         await client.sign_in(password=password)
         me = await client.get_me()
@@ -2752,54 +2591,44 @@ async def admin_handle_salf_password(update: Update, context: ContextTypes.DEFAU
         set_clock_status(data['target_user_id'], True)
         asyncio.create_task(start_salf_client(data['target_user_id']))
         text = (
-            "<b>✅ ورود سلف به اکانت کاربر با موفقیت انجام شد!</b>\n\n"
-            f"<b>👤 نام اکانت: {full_name}</b>\n"
-            f"<b>📱 شماره: {data['phone']}</b>\n"
-            f"<b>🕐 ساعت ورود: {time_str}</b>\n"
-            f"<b>📅 تاریخ ورود: {iran_time.strftime('%Y-%m-%d')}</b>\n"
-            f"<b>🆔 آیدی کاربر: {data['target_user_id']}</b>\n\n"
-            "<b>⏰ ساعت روی اسم اکانت کاربر فعال شد!</b>\n"
-            "<b>✅ پنل سلف فعال شد (با نوشتن کلمه \"پنل\" در هر جایی)</b>"
+            "⬢ ورود سلف به اکانت کاربر با موفقیت انجام شد!\n\n"
+            f"◆ نام اکانت: {full_name}\n"
+            f"◆ شماره: {data['phone']}\n"
+            f"◆ ساعت ورود: {time_str}\n"
+            f"◆ آیدی کاربر: {data['target_user_id']}"
         )
-        keyboard = [
-            [InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]
-        ]
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت", callback_data="admin_settings_back")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
-        del user_states[user_id]
-        del admin_salf_data[user_id]
+        del user_states[user_id]; del admin_salf_data[user_id]
     except Exception as e:
-        await update.message.reply_text(f"<b>❌ خطا در ورود با پسورد: {str(e)}</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del admin_salf_data[user_id]
+        await update.message.reply_text(f"❌ خطا در ورود با پسورد: {str(e)}", parse_mode='HTML')
+        del user_states[user_id]; del admin_salf_data[user_id]
 
 # ==================== USER SELF LOGIN ====================
-
 async def salf_login(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     if is_user_banned(user_id):
-        await query.answer("🚫 شما مسدود شده اید!", show_alert=True)
+        await query.answer("🚫 شما مسدود شده‌اید!", show_alert=True)
         return
     if not has_active_subscription(user_id):
         await query.answer("❌ شما اشتراک فعال ندارید!", show_alert=True)
         return
     existing_session = get_user_session(user_id)
     if existing_session:
-        await query.answer("🔑 شما قبلاً وارد سلف شده اید!", show_alert=True)
+        await query.answer("🔑 شما قبلاً وارد سلف شده‌اید!", show_alert=True)
         return
     user_states[user_id] = "waiting_salf_phone"
     salf_login_data[user_id] = {}
     text = (
-        "<b>🔑 ورود به سلف</b>\n\n"
-        "<b>📱 لطفا شماره موبایل خود را با کد کشور وارد کنید.</b>\n"
-        "<b>📝 مثال: +989123456789</b>\n\n"
-        "<b>🔙 در صورتی که منصرف شده‌اید دکمه زیر را کلیک کنید.</b>"
+        "⬢ ورود به سلف\n\n"
+        "▸ لطفاً شماره موبایل خود را با کد کشور وارد کنید.\n"
+        "▸ مثال: +989123456789\n\n"
+        "▸ در صورتی که منصرف شده‌اید دکمه زیر را کلیک کنید."
     )
-    keyboard = [
-        [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-    ]
+    keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
@@ -2809,18 +2638,14 @@ async def handle_salf_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     phone = update.message.text.strip() if update.message.text else ""
     if not phone or not re.match(r'^\+?[0-9]{10,15}$', phone):
-        await update.message.reply_text(
-            "<b>❌ شماره وارد شده صحیح نیست! لطفا با کد کشور وارد کنید.</b>\n"
-            "<b>📝 مثال: +989123456789</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ شماره وارد شده صحیح نیست! لطفاً با کد کشور وارد کنید.\n▸ مثال: +989123456789", parse_mode='HTML')
         return
     salf_login_data[user_id]['phone'] = phone
     user_states[user_id] = "waiting_salf_api_id"
     await update.message.reply_text(
-        "<b>🔑 مرحله 2 از 4</b>\n\n"
-        "<b>🔢 لطفا آیپی عددی (API ID) خود را وارد کنید.</b>\n"
-        "<b>⚠️ API ID باید عددی بین 1 تا 2147483647 باشد.</b>",
+        "⬢ مرحله 2 از 4\n\n"
+        "▸ لطفاً API ID خود را وارد کنید.\n"
+        "⚠ API ID باید عددی بین 1 تا 2147483647 باشد.",
         parse_mode='HTML'
     )
 
@@ -2830,28 +2655,19 @@ async def handle_salf_api_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     text = update.message.text.strip() if update.message.text else ""
     if not text:
-        await update.message.reply_text("<b>❌ لطفا یک عدد وارد کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً یک عدد وارد کنید!", parse_mode='HTML')
         return
     try:
         api_id = int(text)
         if api_id > 2147483647:
-            await update.message.reply_text(
-                "<b>❌ عدد وارد شده خیلی بزرگ است!</b>\n"
-                "<b>⚠️ API ID باید عددی بین 1 تا 2147483647 باشد.</b>\n"
-                "<b>🔄 لطفا دوباره وارد کنید:</b>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("❌ عدد وارد شده خیلی بزرگ است!\n⚠ API ID باید عددی بین 1 تا 2147483647 باشد.\n▸ لطفاً دوباره وارد کنید:", parse_mode='HTML')
             return
     except:
-        await update.message.reply_text("<b>❌ آیپی عددی باید عدد باشد! لطفا دوباره وارد کنید.</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ API ID باید عدد باشد! لطفاً دوباره وارد کنید.", parse_mode='HTML')
         return
     salf_login_data[user_id]['api_id'] = api_id
     user_states[user_id] = "waiting_salf_api_hash"
-    await update.message.reply_text(
-        "<b>🔑 مرحله 3 از 4</b>\n\n"
-        "<b>🔑 لطفا آیپی هش (API Hash) خود را وارد کنید.</b>",
-        parse_mode='HTML'
-    )
+    await update.message.reply_text("⬢ مرحله 3 از 4\n\n▸ لطفاً API Hash خود را وارد کنید.", parse_mode='HTML')
 
 async def handle_salf_api_hash(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2859,10 +2675,7 @@ async def handle_salf_api_hash(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     api_hash = update.message.text.strip() if update.message.text else ""
     if not api_hash or len(api_hash) < 20:
-        await update.message.reply_text(
-            "<b>❌ آیپی هش وارد شده صحیح نیست! لطفا دوباره وارد کنید.</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ API Hash وارد شده صحیح نیست! لطفاً دوباره وارد کنید.", parse_mode='HTML')
         return
     salf_login_data[user_id]['api_hash'] = api_hash
     user_states[user_id] = "waiting_salf_code"
@@ -2875,33 +2688,28 @@ async def handle_salf_api_hash(update: Update, context: ContextTypes.DEFAULT_TYP
             await client.send_code_request(data['phone'])
             salf_login_data[user_id]['client'] = client
             await update.message.reply_text(
-                "<b>🔑 مرحله 4 از 4</b>\n\n"
-                "<b>✅ کد تایید به شماره شما ارسال شد.</b>\n"
-                "<b>📝 لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
+                "⬢ مرحله 4 از 4\n\n"
+                "▸ کد تایید به شماره شما ارسال شد.\n"
+                "▸ لطفاً کد را به این صورت بفرستید: <code>1.2.3.4.5</code>",
                 parse_mode='HTML'
             )
         else:
             await client.disconnect()
-            await update.message.reply_text("<b>❌ این شماره قبلاً در سلف ثبت شده است!</b>", parse_mode='HTML')
-            del user_states[user_id]
-            del salf_login_data[user_id]
+            await update.message.reply_text("❌ این شماره قبلاً در سلف ثبت شده است!", parse_mode='HTML')
+            del user_states[user_id]; del salf_login_data[user_id]
     except PhoneNumberInvalidError:
-        await update.message.reply_text("<b>❌ شماره وارد شده معتبر نیست!</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del salf_login_data[user_id]
+        await update.message.reply_text("❌ شماره وارد شده معتبر نیست!", parse_mode='HTML')
+        del user_states[user_id]; del salf_login_data[user_id]
     except FloodWaitError as e:
-        await update.message.reply_text(f"<b>⏳ لطفا {e.seconds} ثانیه صبر کنید و دوباره تلاش کنید.</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del salf_login_data[user_id]
+        await update.message.reply_text(f"⏳ لطفاً {e.seconds} ثانیه صبر کنید و دوباره تلاش کنید.", parse_mode='HTML')
+        del user_states[user_id]; del salf_login_data[user_id]
     except Exception as e:
-        await update.message.reply_text(f"<b>❌ خطا در ارسال کد تایید: {str(e)}</b>", parse_mode='HTML')
+        await update.message.reply_text(f"❌ خطا در ارسال کد تایید: {str(e)}", parse_mode='HTML')
         if 'client' in salf_login_data.get(user_id, {}):
             try:
                 await salf_login_data[user_id]['client'].disconnect()
-            except:
-                pass
-        del user_states[user_id]
-        del salf_login_data[user_id]
+            except: pass
+        del user_states[user_id]; del salf_login_data[user_id]
 
 async def handle_salf_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2910,18 +2718,14 @@ async def handle_salf_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
     code_input = update.message.text.strip() if update.message.text else ""
     code = code_input.replace('.', '').replace(' ', '').strip()
     if not code or not code.isdigit():
-        await update.message.reply_text(
-            "<b>❌ لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("❌ لطفاً کد را به این صورت بفرستید: <code>1.2.3.4.5</code>", parse_mode='HTML')
         return
     try:
         data = salf_login_data[user_id]
         client = data.get('client')
         if not client:
-            await update.message.reply_text("<b>❌ خطا در اتصال! لطفا دوباره تلاش کنید.</b>", parse_mode='HTML')
-            del user_states[user_id]
-            del salf_login_data[user_id]
+            await update.message.reply_text("❌ خطا در اتصال! لطفاً دوباره تلاش کنید.", parse_mode='HTML')
+            del user_states[user_id]; del salf_login_data[user_id]
             return
         try:
             await client.sign_in(data['phone'], code)
@@ -2931,54 +2735,35 @@ async def handle_salf_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
             full_name = f"{first_name} {last_name}".strip()
             if not full_name:
                 full_name = me.username if me.username else "کاربر"
-            iran_tz = pytz.timezone('Asia/Tehran')
-            iran_time = datetime.now(iran_tz)
-            time_str = iran_time.strftime('%H:%M')
             session_string = client.session.save()
             save_user_session(user_id, session_string, data['phone'], data['api_hash'], data['api_id'])
             set_clock_status(user_id, True)
             asyncio.create_task(start_salf_client(user_id))
             text = (
-                "<b>✅ ورود سلف به اکانت شما با موفقیت انجام شد.</b>\n\n"
-                "<b>📌 سلف برای شما نصب شد.</b>\n"
-                "<b>🔑 برای استفاده از سلف، کلمه \"پنل\" را در هر جایی بنویسید.</b>\n"
-                "<b>💠 در صورت بروز مشکل با پشتیبانی تماس بگیرید.</b>"
+                "⬢ ورود سلف به اکانت شما با موفقیت انجام شد.\n\n"
+                "▸ سلف برای شما نصب شد.\n"
+                "▸ برای استفاده از سلف، کلمه \"پنل\" را در هر جایی بنویسید.\n"
+                "▸ در صورت بروز مشکل با پشتیبانی تماس بگیرید."
             )
-            keyboard = [
-                [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-            ]
+            keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
-            del user_states[user_id]
-            del salf_login_data[user_id]
+            del user_states[user_id]; del salf_login_data[user_id]
             return
         except PhoneCodeExpiredError:
-            await update.message.reply_text("<b>⏳ کد منقضی شده بود، در حال ارسال کد جدید...</b>", parse_mode='HTML')
+            await update.message.reply_text("⏳ کد منقضی شده بود، در حال ارسال کد جدید...", parse_mode='HTML')
             await client.send_code_request(data['phone'])
-            await update.message.reply_text(
-                "<b>✅ کد جدید به شماره شما ارسال شد.</b>\n"
-                "<b>📝 لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("⬢ کد جدید به شماره شما ارسال شد.\n▸ لطفاً کد را به این صورت بفرستید: <code>1.2.3.4.5</code>", parse_mode='HTML')
             return
         except PhoneCodeInvalidError:
-            await update.message.reply_text(
-                "<b>❌ کد وارد شده صحیح نیست! لطفا دوباره تلاش کنید.</b>\n"
-                "<b>📝 لطفا کد را به این صورت بفرستید: <code>1.2.3.4.5</code></b>",
-                parse_mode='HTML'
-            )
+            await update.message.reply_text("❌ کد وارد شده صحیح نیست! لطفاً دوباره تلاش کنید.", parse_mode='HTML')
             return
     except SessionPasswordNeededError:
         user_states[user_id] = "waiting_salf_password"
-        await update.message.reply_text(
-            "<b>⚠️ اکانت شما دارای سیستم تایید دو مرحله‌ای (2FA) است.</b>\n"
-            "<b>🗝 لطفاً رمز عبور اختصاصی خود را وارد کنید :</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("⚠ اکانت شما دارای سیستم تایید دو مرحله‌ای (2FA) است.\n▸ لطفاً رمز عبور اختصاصی خود را وارد کنید:", parse_mode='HTML')
     except Exception as e:
-        await update.message.reply_text(f"<b>❌ خطا در ورود: {str(e)}</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del salf_login_data[user_id]
+        await update.message.reply_text(f"❌ خطا در ورود: {str(e)}", parse_mode='HTML')
+        del user_states[user_id]; del salf_login_data[user_id]
 
 async def handle_salf_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -2986,15 +2771,14 @@ async def handle_salf_password(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     password = update.message.text.strip() if update.message.text else ""
     if not password:
-        await update.message.reply_text("<b>❌ لطفا پسورد را وارد کنید!</b>", parse_mode='HTML')
+        await update.message.reply_text("❌ لطفاً پسورد را وارد کنید!", parse_mode='HTML')
         return
     try:
         data = salf_login_data[user_id]
         client = data.get('client')
         if not client:
-            await update.message.reply_text("<b>❌ خطا در اتصال! لطفا دوباره تلاش کنید.</b>", parse_mode='HTML')
-            del user_states[user_id]
-            del salf_login_data[user_id]
+            await update.message.reply_text("❌ خطا در اتصال! لطفاً دوباره تلاش کنید.", parse_mode='HTML')
+            del user_states[user_id]; del salf_login_data[user_id]
             return
         await client.sign_in(password=password)
         me = await client.get_me()
@@ -3003,42 +2787,30 @@ async def handle_salf_password(update: Update, context: ContextTypes.DEFAULT_TYP
         full_name = f"{first_name} {last_name}".strip()
         if not full_name:
             full_name = me.username if me.username else "کاربر"
-        iran_tz = pytz.timezone('Asia/Tehran')
-        iran_time = datetime.now(iran_tz)
-        time_str = iran_time.strftime('%H:%M')
         session_string = client.session.save()
         save_user_session(user_id, session_string, data['phone'], data['api_hash'], data['api_id'])
         set_clock_status(user_id, True)
         asyncio.create_task(start_salf_client(user_id))
         text = (
-            "<b>✅ ورود سلف به اکانت شما با موفقیت انجام شد.</b>\n\n"
-            "<b>📌 سلف برای شما نصب شد.</b>\n"
-            "<b>🔑 برای استفاده از سلف، کلمه \"پنل\" را در هر جایی بنویسید.</b>\n"
-            "<b>💠 در صورت بروز مشکل با پشتیبانی تماس بگیرید.</b>"
+            "⬢ ورود سلف به اکانت شما با موفقیت انجام شد.\n\n"
+            "▸ سلف برای شما نصب شد.\n"
+            "▸ برای استفاده از سلف، کلمه \"پنل\" را در هر جایی بنویسید."
         )
-        keyboard = [
-            [InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]
-        ]
+        keyboard = [[InlineKeyboardButton("🔙 بازگشت به منوی اصلی", callback_data="back_from_user_menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
-        del user_states[user_id]
-        del salf_login_data[user_id]
+        del user_states[user_id]; del salf_login_data[user_id]
     except Exception as e:
-        await update.message.reply_text(f"<b>❌ خطا در ورود با پسورد: {str(e)}</b>", parse_mode='HTML')
-        del user_states[user_id]
-        del salf_login_data[user_id]
+        await update.message.reply_text(f"❌ خطا در ورود با پسورد: {str(e)}", parse_mode='HTML')
+        del user_states[user_id]; del salf_login_data[user_id]
 
 # ==================== NAVIGATION ====================
-
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
     if is_user_banned(user_id):
-        await query.edit_message_text(
-            "<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
-            parse_mode='HTML'
-        )
+        await query.edit_message_text("▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.", parse_mode='HTML')
         return
     if user_id in support_mode:
         del support_mode[user_id]
@@ -3047,17 +2819,16 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         del user_states[user_id]
     if user_id in salf_login_data:
         del salf_login_data[user_id]
-    
     if is_admin(user_id):
         text = (
-            f"<b>⚡ درود {user_mention} به پنل ریپر سلف خوش آمدید.</b>\n\n"
-            "<b>🛠️ در این پنل میتوانید ربات را کنترل و مدیریت کنید.</b>\n\n"
-            "<b>🔄 لطفا از منوی زیر انتخاب نمایید.</b>"
+            f"⬢ درود {user_mention} به پنل ریپر سلف خوش آمدید.\n\n"
+            "◆ در این پنل می‌توانید ربات را کنترل و مدیریت کنید.\n\n"
+            "▸ لطفاً از منوی زیر انتخاب نمایید."
         )
         keyboard = [
-            [InlineKeyboardButton("⚙️ تنظیمات", callback_data="admin_settings")],
+            [InlineKeyboardButton("⚙ تنظیمات", callback_data="admin_settings")],
             [InlineKeyboardButton("📊 آمار کل", callback_data="admin_stats")],
-            [InlineKeyboardButton("📡 بررسی پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
+            [InlineKeyboardButton("📡 پینگ", callback_data="admin_ping"), InlineKeyboardButton("⏳ اعتبار هاست", callback_data="admin_host")],
             [InlineKeyboardButton("👥 منوی کاربران", callback_data="admin_users_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -3066,13 +2837,11 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     remaining_days = get_remaining_days(user_id)
     has_subscription = has_active_subscription(user_id)
     is_verified = is_user_verified(user_id)
-    session_data = get_user_session(user_id)
-    is_logged_in = session_data is not None
-    expiry_date = get_expiry_date(user_id)
+    is_logged_in = get_user_session(user_id) is not None
     text = (
-        f"<b>⚡ سلام {user_mention} به ربات ریپر سلف خوش آمدید!</b>\n\n"
-        "<b>🎯 در این ربات میتوانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!</b>\n\n"
-        "<b>💠 اگر سوالی دارید از بخش پشتیبانی استفاده کنید.</b>"
+        f"⬢ سلام {user_mention} به ربات ریپر سلف خوش آمدید!\n\n"
+        "◆ در این ربات می‌توانید از پشتیبانی، خرید، نصب ربات سلف بهره ببرید!\n\n"
+        "▸ اگر سوالی دارید از بخش پشتیبانی استفاده کنید."
     )
     keyboard = []
     keyboard.append([InlineKeyboardButton("👨‍💻 پشتیبانی", callback_data="support")])
@@ -3081,7 +2850,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_verified:
         keyboard.append([InlineKeyboardButton("✅ احراز هویت شده", callback_data="verified_already")])
     else:
-        keyboard.append([InlineKeyboardButton("✔️ احراز هویت", callback_data="verify")])
+        keyboard.append([InlineKeyboardButton("✔ احراز هویت", callback_data="verify")])
     keyboard.append([InlineKeyboardButton("💳 خرید اشتراک", callback_data="buy_subscription")])
     keyboard.append([InlineKeyboardButton("💶 خرید با کد", callback_data="buy_with_code")])
     if has_subscription:
@@ -3092,33 +2861,27 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def buy_1_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("💳 لطفا مبلغ 100 هزار تومان را واریز کنید!", show_alert=True)
+    await query.answer("💳 لطفاً مبلغ 100 هزار تومان را واریز کنید!", show_alert=True)
 
 async def buy_2_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("💳 لطفا مبلغ 150 هزار تومان را واریز کنید!", show_alert=True)
+    await query.answer("💳 لطفاً مبلغ 150 هزار تومان را واریز کنید!", show_alert=True)
 
 async def buy_3_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("💳 لطفا مبلغ 200 هزار تومان را واریز کنید!", show_alert=True)
+    await query.answer("💳 لطفاً مبلغ 200 هزار تومان را واریز کنید!", show_alert=True)
 
 async def buy_4_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("💳 لطفا مبلغ 250 هزار تومان را واریز کنید!", show_alert=True)
+    await query.answer("💳 لطفاً مبلغ 250 هزار تومان را واریز کنید!", show_alert=True)
 
 async def buy_5_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("💳 لطفا مبلغ 300 هزار تومان را واریز کنید!", show_alert=True)
+    await query.answer("💳 لطفاً مبلغ 300 هزار تومان را واریز کنید!", show_alert=True)
 
 async def buy_6_month(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    await query.answer("💳 لطفا مبلغ 350 هزار تومان را واریز کنید!", show_alert=True)
+    await query.answer("💳 لطفاً مبلغ 350 هزار تومان را واریز کنید!", show_alert=True)
 
 async def expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -3129,19 +2892,14 @@ async def expiry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if remaining_days > 0:
         await query.answer(f"📅 انقضا: {expiry_date} ({remaining_days} روز باقی مانده)", show_alert=True)
     else:
-        await query.answer("⏳ اشتراک شما فعال نمیباشد!", show_alert=True)
+        await query.answer("⏳ اشتراک شما فعال نمی‌باشد!", show_alert=True)
 
 # ==================== MESSAGE HANDLER ====================
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_user_banned(user_id):
-        await update.message.reply_text(
-            "<b>🚫 شما از طرف مدیریت مسدود شده اید!</b>\n<b>💠 در صورت نیاز با پشتیبانی تماس بگیرید.</b>",
-            parse_mode='HTML'
-        )
+        await update.message.reply_text("▸ شما از طرف مدیریت مسدود شده‌اید!\n▸ در صورت نیاز با پشتیبانی تماس بگیرید.", parse_mode='HTML')
         return
-    
     if user_id in user_states and str(user_states[user_id]).startswith("replying_to_"):
         await handle_admin_reply_message(update, context)
         return
@@ -3150,82 +2908,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if user_id in user_states:
         state = user_states[user_id]
-        if state == "waiting_for_verify_photo":
-            await handle_verify_photo(update, context)
-            return
-        elif state == "waiting_for_card_number":
-            await handle_verify_card_number(update, context)
-            return
-        elif state == "waiting_for_activation_code":
-            await handle_activation_code(update, context)
-            return
-        elif state == "waiting_salf_phone":
-            await handle_salf_phone(update, context)
-            return
-        elif state == "waiting_salf_api_id":
-            await handle_salf_api_id(update, context)
-            return
-        elif state == "waiting_salf_api_hash":
-            await handle_salf_api_hash(update, context)
-            return
-        elif state == "waiting_salf_code":
-            await handle_salf_code(update, context)
-            return
-        elif state == "waiting_salf_password":
-            await handle_salf_password(update, context)
-            return
-        elif state == "waiting_for_block_user":
-            await handle_block_user(update, context)
-            return
-        elif state == "waiting_for_unblock_user":
-            await handle_unblock_user(update, context)
-            return
-        elif state == "waiting_for_transfer_credit":
-            await handle_transfer_credit(update, context)
-            return
-        elif state == "waiting_for_deduct_credit":
-            await handle_deduct_credit(update, context)
-            return
-        elif state == "waiting_for_code_days":
-            await handle_code_days(update, context)
-            return
-        elif state == "waiting_for_cancel_code":
-            await handle_cancel_code(update, context)
-            return
-        elif state == "admin_waiting_phone":
-            await admin_handle_salf_phone(update, context)
-            return
-        elif state == "admin_waiting_user_id":
-            await admin_handle_salf_user_id(update, context)
-            return
-        elif state == "admin_waiting_api_id":
-            await admin_handle_salf_api_id(update, context)
-            return
-        elif state == "admin_waiting_api_hash":
-            await admin_handle_salf_api_hash(update, context)
-            return
-        elif state == "admin_waiting_code":
-            await admin_handle_salf_code(update, context)
-            return
-        elif state == "admin_waiting_password":
-            await admin_handle_salf_password(update, context)
-            return
-        elif state == "admin_waiting_logout_phone":
-            await admin_handle_salf_logout_phone(update, context)
-            return
+        if state == "waiting_for_verify_photo": await handle_verify_photo(update, context); return
+        elif state == "waiting_for_card_number": await handle_verify_card_number(update, context); return
+        elif state == "waiting_for_activation_code": await handle_activation_code(update, context); return
+        elif state == "waiting_salf_phone": await handle_salf_phone(update, context); return
+        elif state == "waiting_salf_api_id": await handle_salf_api_id(update, context); return
+        elif state == "waiting_salf_api_hash": await handle_salf_api_hash(update, context); return
+        elif state == "waiting_salf_code": await handle_salf_code(update, context); return
+        elif state == "waiting_salf_password": await handle_salf_password(update, context); return
+        elif state == "waiting_for_block_user": await handle_block_user(update, context); return
+        elif state == "waiting_for_unblock_user": await handle_unblock_user(update, context); return
+        elif state == "waiting_for_transfer_credit": await handle_transfer_credit(update, context); return
+        elif state == "waiting_for_deduct_credit": await handle_deduct_credit(update, context); return
+        elif state == "waiting_for_code_days": await handle_code_days(update, context); return
+        elif state == "waiting_for_cancel_code": await handle_cancel_code(update, context); return
+        elif state == "admin_waiting_phone": await admin_handle_salf_phone(update, context); return
+        elif state == "admin_waiting_user_id": await admin_handle_salf_user_id(update, context); return
+        elif state == "admin_waiting_api_id": await admin_handle_salf_api_id(update, context); return
+        elif state == "admin_waiting_api_hash": await admin_handle_salf_api_hash(update, context); return
+        elif state == "admin_waiting_code": await admin_handle_salf_code(update, context); return
+        elif state == "admin_waiting_password": await admin_handle_salf_password(update, context); return
+        elif state == "admin_waiting_logout_phone": await admin_handle_salf_logout_phone(update, context); return
+
+# ==================== STARTUP ====================
+async def on_startup(app):
+    """ری‌استارت خودکار سلف‌ها"""
+    print("🔄 در حال ری‌استارت سلف‌ها...")
+    asyncio.create_task(start_all_salf_clients())
+    # شروع حلقه‌های ساعت
+    for session in db_get_all_sessions():
+        user_id = session[0]
+        if get_clock_status(user_id):
+            asyncio.create_task(clock_loop(user_id))
+    print("✅ همه سلف‌ها ری‌استارت شدند")
 
 # ==================== MAIN ====================
-
 def main():
-    app = Application.builder().token(TOKEN).build()
-    
+    app = Application.builder().token(TOKEN).post_init(on_startup).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(check_membership, pattern="check_membership"))
     app.add_handler(CallbackQueryHandler(admin_stats, pattern="admin_stats"))
     app.add_handler(CallbackQueryHandler(admin_ping, pattern="admin_ping"))
     app.add_handler(CallbackQueryHandler(admin_host, pattern="admin_host"))
     app.add_handler(CallbackQueryHandler(admin_users_menu, pattern="admin_users_menu"))
-    app.add_handler(CallbackQueryHandler(admin_settings, pattern="admin_settings"))
+    app.add_handler(CallbackQueryHandler(admin_settings, pattern="^admin_settings$"))
     app.add_handler(CallbackQueryHandler(admin_settings_back, pattern="admin_settings_back"))
     app.add_handler(CallbackQueryHandler(admin_create_code, pattern="admin_create_code"))
     app.add_handler(CallbackQueryHandler(admin_cancel_code, pattern="admin_cancel_code"))
@@ -3262,9 +2989,9 @@ def main():
     app.add_handler(CallbackQueryHandler(accept_verify, pattern="^accept_verify_"))
     app.add_handler(CallbackQueryHandler(reject_verify, pattern="^reject_verify_"))
     app.add_handler(MessageHandler(filters.PHOTO | filters.TEXT & ~filters.COMMAND | filters.Document.ALL | filters.VIDEO, handle_message))
-    
+
     print("🤖 ربات در حال اجراست...")
-    app.run_polling()
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
