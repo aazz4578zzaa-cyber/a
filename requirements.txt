@@ -1,8 +1,5 @@
 python-telegram-bot==21.6
 telethon==1.36.0
-tgcrypto
 psutil
 pytz
-requests
-aiohttp
-python-dotenv
+tgcrypto
