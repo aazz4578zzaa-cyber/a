@@ -1,7 +1,7 @@
 """
 ربات خصوصی مدیریت پروفایل
 نسخه تک‌فایل با Telethon
-دکمه‌ها با استایل رنگی واقعی (RichButtonStyle)
+دکمه‌ها با استایل رنگی (primary/success/danger)
 """
 
 import asyncio
@@ -26,15 +26,6 @@ from telethon.tl.functions.messages import (
 )
 from telethon.tl.functions.photos import GetUserPhotosRequest
 from telethon.tl.types import ChannelParticipantsSearch
-
-# تلاش برای import کردن RichButtonStyle (نسخه‌های جدید Telethon)
-try:
-    from telethon.tl.types import RichButtonStyle
-    HAS_RICH_STYLE = True
-except ImportError:
-    RichButtonStyle = None
-    HAS_RICH_STYLE = False
-    logging.warning("RichButtonStyle موجود نیست — دکمه‌ها بدون رنگ خواهند بود")
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -316,30 +307,19 @@ def is_human_face(img_bgr):
         return False
 
 
-# ==================== دکمه‌های رنگی واقعی ====================
+# ==================== دکمه‌های رنگی ====================
 def btn(text, data, style=None):
     """
     ساخت دکمه با استایل رنگی
     style: 'primary' (آبی) | 'success' (سبز) | 'danger' (قرمز) | None
     """
-    if HAS_RICH_STYLE and RichButtonStyle and style:
-        try:
-            if style == "primary":
-                style_obj = RichButtonStyle(bg_primary=True)
-            elif style == "success":
-                style_obj = RichButtonStyle(bg_success=True)
-            elif style == "danger":
-                style_obj = RichButtonStyle(bg_danger=True)
-            else:
-                style_obj = None
-
-            if style_obj:
-                return Button.inline(text, data, style=style_obj)
-        except (TypeError, AttributeError) as e:
-            logger.debug(f"RichButtonStyle failed: {e}")
-
-    # Fallback
-    return Button.inline(text, data)
+    try:
+        if style in ("primary", "success", "danger"):
+            return Button.inline(text, data, style=style)
+        return Button.inline(text, data)
+    except (TypeError, ValueError) as e:
+        logger.debug(f"style failed: {e}")
+        return Button.inline(text, data)
 
 
 # ==================== کیبوردها ====================
@@ -1304,11 +1284,6 @@ async def main():
     await bot.start(bot_token=BOT_TOKEN)
     me = await bot.get_me()
     logger.info(f"ربات @{me.username} با موفقیت راه‌اندازی شد")
-
-    if HAS_RICH_STYLE:
-        logger.info("پشتیبانی از دکمه‌های رنگی فعال است")
-    else:
-        logger.warning("دکمه‌های رنگی غیرفعال — لطفاً تلگرام و Telethon را آپدیت کنید")
 
     await bot.run_until_disconnected()
 
