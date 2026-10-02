@@ -1,7 +1,7 @@
 """
 ربات خصوصی مدیریت پروفایل
 نسخه تک‌فایل با Telethon
-دکمه‌ها با استایل رنگی تلگرام (primary/success/danger)
+دکمه‌ها با استایل رنگی واقعی (RichButtonStyle)
 """
 
 import asyncio
@@ -25,7 +25,13 @@ from telethon.tl.functions.messages import (
     ImportChatInviteRequest, CheckChatInviteRequest
 )
 from telethon.tl.functions.photos import GetUserPhotosRequest
-from telethon.tl.types import ChannelParticipantsSearch
+from telethon.tl.types import (
+    ChannelParticipantsSearch,
+    RichButtonStyle,
+    ReplyInlineMarkup,
+    KeyboardButtonRow,
+    KeyboardButtonCallback,
+)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -70,7 +76,6 @@ async def init_db():
             USE_POSTGRES = True
 
             async with _pool.acquire() as conn:
-                # ⚠️ مهم: owner_id از نوع BIGINT هست، نه TEXT
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS accounts (
                         id SERIAL PRIMARY KEY,
@@ -309,17 +314,25 @@ def is_human_face(img_bgr):
         return False
 
 
-# ==================== دکمه‌های استایل‌دار ====================
+# ==================== دکمه‌های رنگی واقعی ====================
 def btn(text, data, style=None):
     """
-    ساخت دکمه با استایل و ایموجی
+    ساخت دکمه با استایل رنگی واقعی
     style: 'primary' (آبی) | 'success' (سبز) | 'danger' (قرمز) | None
     """
     try:
-        if style:
-            return Button.inline(text, data, style=style)
-        return Button.inline(text, data)
-    except TypeError:
+        if style == "primary":
+            style_obj = RichButtonStyle(bg_primary=True)
+        elif style == "success":
+            style_obj = RichButtonStyle(bg_success=True)
+        elif style == "danger":
+            style_obj = RichButtonStyle(bg_danger=True)
+        else:
+            style_obj = None
+
+        return Button.inline(text, data, style=style_obj)
+    except (TypeError, AttributeError):
+        # نسخه‌های قدیمی Telethon
         return Button.inline(text, data)
 
 
