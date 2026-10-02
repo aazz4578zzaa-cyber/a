@@ -1277,14 +1277,38 @@ async def process_group(event, uid, link):
                 pass
 
 
-# ==================== Main ====================
+# ==================== Main (با مدیریت FloodWait) ====================
 async def main():
     await init_db()
 
-    await bot.start(bot_token=BOT_TOKEN)
-    me = await bot.get_me()
-    logger.info(f"ربات @{me.username} با موفقیت راه‌اندازی شد")
+    # ═══════ مدیریت FloodWait ═══════
+    max_retries = 10
+    connected = False
 
+    for attempt in range(max_retries):
+        try:
+            await bot.start(bot_token=BOT_TOKEN)
+            me = await bot.get_me()
+            logger.info(f"ربات @{me.username} با موفقیت راه‌اندازی شد")
+            connected = True
+            break
+        except FloodWaitError as e:
+            wait_time = e.seconds + 30
+            logger.warning(
+                f"FloodWait: باید {e.seconds} ثانیه صبر کنم. "
+                f"الان {wait_time} ثانیه صبر می‌کنم... "
+                f"(تلاش {attempt+1}/{max_retries})"
+            )
+            await asyncio.sleep(wait_time)
+        except Exception as e:
+            logger.exception(f"خطا در start: {e}")
+            await asyncio.sleep(60)
+
+    if not connected:
+        logger.error("ربات بعد از چند تلاش راه‌اندازی نشد.")
+        return
+
+    logger.info("ربات آنلاین است. منتظر پیام‌ها...")
     await bot.run_until_disconnected()
 
 
