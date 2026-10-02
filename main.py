@@ -23,7 +23,7 @@ from telethon.tl.functions.photos import GetUserPhotosRequest
 from telethon.tl.types import User
 
 # ==================== تنظیمات ====================
-TOKEN = os.environ.get("TOKEN", "PASTE_YOUR_NEW_BOT_TOKEN_HERE")
+TOKEN = os.environ.get("TOKEN", "8816493813:AAHSSd5Xz1i4jCbZ-jW9QrW8QcRAZi41BzQ")
 MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))  # آیدی عددی خودت رو اینجا بذار
 
 DB_FILE = "private_bot.db"
