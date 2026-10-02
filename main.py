@@ -48,7 +48,8 @@ BOT_TOKEN = os.environ.get(
     "8816493813:AAHSSd5Xz1i4jCbZ-jW9QrW8QcRAZi41BzQ"
 )
 MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+DATABASE_URL = os.environ.get("DATABASE_URL", 
+                              "8843126535:AAEtN5avPoX6AnYjVQAWuAUxu9_3nyr2ybg")
 
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
