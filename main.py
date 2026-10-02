@@ -24,7 +24,7 @@ from telethon.tl.types import User
 
 # ==================== تنظیمات ====================
 TOKEN = os.environ.get("TOKEN", "PASTE_YOUR_NEW_BOT_TOKEN_HERE")
-MY_USER_ID = int(os.environ.get("MY_USER_ID", "0"))  # آیدی عددی خودت رو اینجا بذار
+MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))  # آیدی عددی خودت رو اینجا بذار
 
 DB_FILE = "private_bot.db"
 
