@@ -183,58 +183,70 @@ async def db_add_account(owner_id, phone, api_id, api_hash, session_str, name, u
     return await db_exec(
         '''INSERT INTO accounts (owner_id, phone, api_id, api_hash, session_string, account_name, username, created_date)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id''',
-        (str(owner_id), phone, api_id, api_hash, session_str, name, username, datetime.now().isoformat())
+        (int(owner_id), phone, api_id, api_hash, session_str, name, username, datetime.now().isoformat())
     )
 
 
 async def db_get_accounts(owner_id):
     rows = await db_exec(
         'SELECT * FROM accounts WHERE owner_id = ? AND is_active = 1 ORDER BY id DESC',
-        (str(owner_id),), fetch=True
+        (int(owner_id),), fetch=True
     )
     return rows or []
 
 
 async def db_get_account(acc_id):
-    return await db_exec('SELECT * FROM accounts WHERE id = ?', (acc_id,), fetch_one=True)
+    return await db_exec('SELECT * FROM accounts WHERE id = ?', (int(acc_id),), fetch_one=True)
 
 
 async def db_delete_account(acc_id):
-    await db_exec('UPDATE accounts SET is_active = 0 WHERE id = ?', (acc_id,))
+    await db_exec('UPDATE accounts SET is_active = 0 WHERE id = ?', (int(acc_id),))
 
 
 async def db_add_template(owner_id, title, text):
     return await db_exec(
         'INSERT INTO templates (owner_id, title, text, created_date) VALUES (?, ?, ?, ?) RETURNING id',
-        (str(owner_id), title, text, datetime.now().isoformat())
+        (int(owner_id), title, text, datetime.now().isoformat())
     )
 
 
 async def db_get_templates(owner_id):
-    rows = await db_exec('SELECT * FROM templates WHERE owner_id = ? ORDER BY id DESC', (str(owner_id),), fetch=True)
+    rows = await db_exec(
+        'SELECT * FROM templates WHERE owner_id = ? ORDER BY id DESC',
+        (int(owner_id),), fetch=True
+    )
     return rows or []
 
 
 async def db_get_template(tid):
-    return await db_exec('SELECT * FROM templates WHERE id = ?', (tid,), fetch_one=True)
+    return await db_exec('SELECT * FROM templates WHERE id = ?', (int(tid),), fetch_one=True)
 
 
 async def db_delete_template(tid):
-    await db_exec('DELETE FROM templates WHERE id = ?', (tid,))
+    await db_exec('DELETE FROM templates WHERE id = ?', (int(tid),))
 
 
 async def db_get_settings(owner_id):
-    row = await db_exec('SELECT * FROM settings WHERE owner_id = ?', (str(owner_id),), fetch_one=True)
+    row = await db_exec(
+        'SELECT * FROM settings WHERE owner_id = ?',
+        (int(owner_id),), fetch_one=True
+    )
     if not row:
-        await db_exec('INSERT INTO settings (owner_id) VALUES (?)', (str(owner_id),))
-        row = await db_exec('SELECT * FROM settings WHERE owner_id = ?', (str(owner_id),), fetch_one=True)
+        await db_exec('INSERT INTO settings (owner_id) VALUES (?)', (int(owner_id),))
+        row = await db_exec(
+            'SELECT * FROM settings WHERE owner_id = ?',
+            (int(owner_id),), fetch_one=True
+        )
     return row
 
 
 async def db_update_setting(owner_id, **kwargs):
     await db_get_settings(owner_id)
     for key, val in kwargs.items():
-        await db_exec(f'UPDATE settings SET {key} = ? WHERE owner_id = ?', (val, str(owner_id)))
+        await db_exec(
+            f'UPDATE settings SET {key} = ? WHERE owner_id = ?',
+            (val, int(owner_id))
+        )
 
 
 def is_owner(user_id):
@@ -297,19 +309,16 @@ def is_human_face(img_bgr):
 
 
 # ==================== دکمه‌های استایل‌دار ====================
-# تلگرام از استایل‌های primary (آبی)، success (سبز)، danger (قرمز) پشتیبانی می‌کند
-
 def btn(text, data, style=None):
     """
     ساخت دکمه با استایل و ایموجی
-    style: 'primary' | 'success' | 'danger' | None
+    style: 'primary' (آبی) | 'success' (سبز) | 'danger' (قرمز) | None
     """
     try:
         if style:
             return Button.inline(text, data, style=style)
         return Button.inline(text, data)
     except TypeError:
-        # نسخه‌های قدیمی Telethon از style پشتیبانی نمی‌کنند
         return Button.inline(text, data)
 
 
@@ -409,7 +418,6 @@ async def handle_callback(event):
                 buttons=back_kb()
             )
 
-        # === اکانت‌ها ===
         elif data == "menu_accounts":
             await show_accounts_menu(event, uid)
 
@@ -443,7 +451,6 @@ async def handle_callback(event):
                 await db_update_setting(uid, current_account_id=None)
             await show_accounts_menu(event, uid)
 
-        # === قالب‌ها ===
         elif data == "menu_templates":
             await show_templates_menu(event, uid)
 
@@ -475,7 +482,6 @@ async def handle_callback(event):
                 await db_update_setting(uid, current_template_id=None)
             await show_templates_menu(event, uid)
 
-        # === دریافت پروفایل ===
         elif data == "menu_get_profile":
             s = await db_get_settings(uid)
             if not s or not s[1]:
@@ -504,7 +510,6 @@ async def handle_callback(event):
                 buttons=back_kb()
             )
 
-        # === چند شناسه ===
         elif data == "menu_multi":
             s = await db_get_settings(uid)
             if not s or not s[1]:
@@ -521,7 +526,6 @@ async def handle_callback(event):
                 buttons=back_kb()
             )
 
-        # === گروه ===
         elif data == "menu_group":
             s = await db_get_settings(uid)
             if not s or not s[1]:
@@ -538,7 +542,6 @@ async def handle_callback(event):
                 buttons=back_kb()
             )
 
-        # === کانال ===
         elif data == "menu_channel":
             s = await db_get_settings(uid)
             current = s[3] if s and s[3] else None
@@ -691,7 +694,6 @@ async def handle_message(event):
     text = event.text.strip()
 
     try:
-        # ===== افزودن اکانت =====
         if state == "WAIT_PHONE":
             if not re.match(r'^\+?[0-9]{10,15}$', text):
                 await event.respond("شماره وارد شده نامعتبر است. مجدداً ارسال فرمایید یا /cancel.")
@@ -790,7 +792,6 @@ async def handle_message(event):
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
 
-        # ===== افزودن قالب =====
         elif state == "WAIT_NEW_TEMPLATE":
             user_temp[uid]['tmpl_title'] = text
             user_states[uid] = "WAIT_TEMPLATE_TEXT"
@@ -814,23 +815,19 @@ async def handle_message(event):
             user_states.pop(uid, None)
             user_temp.pop(uid, None)
 
-        # ===== دریافت پروفایل =====
         elif state == "WAIT_TARGET_INPUT":
             user_states.pop(uid, None)
             asyncio.create_task(process_single_target(event, uid, text))
 
-        # ===== چند شناسه =====
         elif state == "WAIT_MULTI_IDS":
             user_states.pop(uid, None)
             lines = [l.strip() for l in text.split('\n') if l.strip()]
             asyncio.create_task(process_multi_targets(event, uid, lines))
 
-        # ===== گروه =====
         elif state == "WAIT_GROUP_LINK":
             user_states.pop(uid, None)
             asyncio.create_task(process_group(event, uid, text))
 
-        # ===== کانال =====
         elif state == "WAIT_CHANNEL_LINK":
             user_states.pop(uid, None)
             if text.startswith('@') or text.startswith('https://t.me/'):
