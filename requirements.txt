@@ -1,5 +1,5 @@
 python-telegram-bot==21.6
 telethon==1.36.0
-psutil
-pytz
+opencv-python-headless
+numpy
 tgcrypto
