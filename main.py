@@ -1,9 +1,9 @@
 """
-ربات خصوصی مدیریت پروفایل
-نسخه تک‌فایل با Telethon
-دکمه‌ها با استایل رنگی (primary/success/danger)
-AI فیلتر چهره با حساسیت بالا
-ارسال آلبومی (Media Group)
+ربات مدیریت پروفایل + جداسازی چهره
+- به آیدی/یوزرنیم می‌دی → تمام پروفایل‌هاش رو می‌گیره
+- چهره‌های موجود در عکس‌ها رو تشخیص می‌ده
+- هر چهره رو کراپ می‌کنه
+- به صورت Photo (آلبوم) می‌فرسته — نه فایل
 """
 
 import asyncio
@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import sqlite3
+import urllib.request
 from datetime import datetime
 from io import BytesIO
 
@@ -24,10 +25,15 @@ from telethon.errors import (
 from telethon.sessions import StringSession
 from telethon.tl.functions.channels import GetParticipantsRequest
 from telethon.tl.functions.messages import (
-    ImportChatInviteRequest, CheckChatInviteRequest
+    ImportChatInviteRequest, CheckChatInviteRequest,
+    SendMultiMediaRequest
 )
 from telethon.tl.functions.photos import GetUserPhotosRequest
-from telethon.tl.types import ChannelParticipantsSearch
+from telethon.tl.types import (
+    ChannelParticipantsSearch,
+    InputMediaPhoto,
+    InputSingleMedia
+)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -39,7 +45,7 @@ logger = logging.getLogger(__name__)
 # ==================== تنظیمات ====================
 BOT_TOKEN = os.environ.get(
     "TOKEN",
-    "8843126535:AAEtN5avPoX6AnYjVQAWuAUxu9_3nyr2ybg"
+    "8816493813:AAHSSd5Xz1i4jCbZ-jW9QrW8QcRAZi41BzQ"
 )
 MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -47,12 +53,103 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
 
-ALBUM_CHUNK_SIZE = 10  # حداکثر عکس در هر آلبوم (تلگرام = 10)
+ALBUM_CHUNK_SIZE = 10
+FACE_CONFIDENCE = 0.6
+MIN_FACE_SIZE = 40
+MARGIN_RATIO = 0.3
 
 
 # ==================== State ====================
 user_states = {}
 user_temp = {}
+
+
+# ==================== YuNet Face Detector ====================
+_yunet = None
+
+
+def _download_yunet_model():
+    model_path = "face_detection_yunet_2023mar.onnx"
+    if os.path.exists(model_path):
+        return model_path
+
+    url = (
+        "https://huggingface.co/opencv/face_detection_yunet/"
+        "resolve/main/face_detection_yunet_2023mar.onnx"
+    )
+    try:
+        logger.info("در حال دانلود مدل YuNet...")
+        urllib.request.urlretrieve(url, model_path)
+        logger.info("مدل YuNet دانلود شد")
+    except Exception as e:
+        logger.error(f"دانلود YuNet ناموفق: {e}")
+    return model_path
+
+
+def init_yunet():
+    global _yunet
+    if _yunet is None:
+        model_path = _download_yunet_model()
+        if not os.path.exists(model_path):
+            logger.error("مدل YuNet پیدا نشد")
+            return None
+        _yunet = cv2.FaceDetectorYN.create(
+            model=model_path,
+            config="",
+            input_size=(320, 320),
+            score_threshold=FACE_CONFIDENCE,
+            nms_threshold=0.3,
+            top_k=5000
+        )
+    return _yunet
+
+
+def crop_faces_from_image(img_bgr):
+    """
+    تشخیص و کراپ چهره‌ها از یه عکس
+    خروجی: لیست بایت‌های عکس‌های کراپ‌شده
+    """
+    detector = init_yunet()
+    if detector is None:
+        return []
+
+    try:
+        h, w = img_bgr.shape[:2]
+        detector.setInputSize((w, h))
+        _, faces = detector.detect(img_bgr)
+
+        if faces is None or len(faces) == 0:
+            return []
+
+        cropped = []
+        for face in faces:
+            x, y, fw, fh = face[0:4]
+            score = face[-1]
+            if score < FACE_CONFIDENCE:
+                continue
+            if fw < MIN_FACE_SIZE or fh < MIN_FACE_SIZE:
+                continue
+
+            mx = int(fw * MARGIN_RATIO)
+            my = int(fh * MARGIN_RATIO)
+
+            x1 = max(0, int(x) - mx)
+            y1 = max(0, int(y) - my)
+            x2 = min(w, int(x + fw) + mx)
+            y2 = min(h, int(y + fh) + my)
+
+            crop = img_bgr[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+
+            ok, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            if ok:
+                cropped.append(buf.tobytes())
+
+        return cropped
+    except Exception as e:
+        logger.exception(f"crop_faces error: {e}")
+        return []
 
 
 # ==================== دیتابیس ====================
@@ -256,90 +353,16 @@ def is_owner(user_id):
     return user_id == MY_USER_ID
 
 
-# ==================== AI فیلتر چهره (حساسیت بالا) ====================
-_cascade_frontal = None
-_cascade_profile = None
-_cascade_eye = None
-
-
-def _init_cascades():
-    global _cascade_frontal, _cascade_profile, _cascade_eye
-    if _cascade_frontal is None:
-        _cascade_frontal = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-        )
-        _cascade_profile = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_profileface.xml'
-        )
-        _cascade_eye = cv2.CascadeClassifier(
-            cv2.data.haarcascades + 'haarcascade_eye.xml'
-        )
-
-
-def is_human_face(img_bgr):
-    """تشخیص چهره انسانی با ۴ الگوریتم و حساسیت بالا"""
-    try:
-        _init_cascades()
-        h, w = img_bgr.shape[:2]
-        if w > 1000:
-            scale = 1000 / w
-            img_bgr = cv2.resize(img_bgr, (1000, int(h * scale)))
-
-        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
-        gray = cv2.equalizeHist(gray)
-        min_size = max(25, int(min(gray.shape) * 0.05))
-
-        # ۱. چهره روبرو
-        faces = _cascade_frontal.detectMultiScale(
-            gray, scaleFactor=1.03, minNeighbors=3,
-            minSize=(min_size, min_size)
-        )
-        if len(faces) > 0:
-            return True
-
-        # ۲. چهره نیم‌رخ
-        faces = _cascade_profile.detectMultiScale(
-            gray, scaleFactor=1.03, minNeighbors=3,
-            minSize=(min_size, min_size)
-        )
-        if len(faces) > 0:
-            return True
-
-        # ۳. چهره نیم‌رخ آینه‌ای
-        flipped = cv2.flip(gray, 1)
-        faces = _cascade_profile.detectMultiScale(
-            flipped, scaleFactor=1.03, minNeighbors=3,
-            minSize=(min_size, min_size)
-        )
-        if len(faces) > 0:
-            return True
-
-        # ۴. اگه دو تا چشم پیدا شد
-        eyes = _cascade_eye.detectMultiScale(
-            gray, scaleFactor=1.03, minNeighbors=3, minSize=(15, 15)
-        )
-        if len(eyes) >= 2:
-            return True
-
-        return False
-    except Exception as e:
-        print(f"face filter error: {e}")
-        return False
-
-
-# ==================== دکمه‌های رنگی ====================
+# ==================== دکمه‌ها ====================
 def btn(text, data, style=None):
-    """ساخت دکمه با استایل رنگی"""
     try:
         if style in ("primary", "success", "danger"):
             return Button.inline(text, data, style=style)
         return Button.inline(text, data)
-    except (TypeError, ValueError) as e:
-        logger.debug(f"style failed: {e}")
+    except (TypeError, ValueError):
         return Button.inline(text, data)
 
 
-# ==================== کیبوردها ====================
 def main_menu_kb():
     return [
         [
@@ -347,6 +370,7 @@ def main_menu_kb():
             btn("مدیریت قالب‌ها 📝", b"menu_templates", "primary")
         ],
         [btn("دریافت پروفایل 🔍", b"menu_get_profile", "success")],
+        [btn("جداسازی چهره 🎭", b"menu_crop_face", "success")],
         [
             btn("چند شناسه همزمان 📋", b"menu_multi", "primary"),
             btn("گروه و کانال 👥", b"menu_group", "primary")
@@ -362,7 +386,6 @@ def back_kb(target=b"menu_main"):
     return [[btn("بازگشت 🔙", target, "danger")]]
 
 
-# ==================== متن‌های رسمی ====================
 async def main_menu_text(owner_id):
     s = await db_get_settings(owner_id)
     acc_name = "انتخاب نشده"
@@ -391,32 +414,33 @@ async def main_menu_text(owner_id):
     )
 
 
-# ==================== ربات اصلی ====================
+# ==================== ربات ====================
 bot = TelegramClient(StringSession(), BOT_API_ID, BOT_API_HASH)
 
 
-# ==================== توابع کمکی برای ارسال آلبوم ====================
-async def send_album(client, chat_id, files_data, caption=None):
+# ==================== ارسال آلبومی به صورت Photo ====================
+async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
     """
-    ارسال لیست عکس‌ها به صورت آلبوم (Media Group)
-    files_data: لیست بایت‌های عکس
-    caption: کپشن روی عکس اول
+    ارسال لیست عکس‌های بایتی به صورت آلبوم Photo
+    (نه فایل، نه Document)
     """
-    if not files_data:
+    if not photo_bytes_list:
         return 0
 
-    sent_count = 0
+    total_sent = 0
 
-    # تکه‌تکه کردن به آلبوم‌های حداکثر 10 تایی
-    for i in range(0, len(files_data), ALBUM_CHUNK_SIZE):
-        chunk = files_data[i:i + ALBUM_CHUNK_SIZE]
+    for i in range(0, len(photo_bytes_list), ALBUM_CHUNK_SIZE):
+        chunk = photo_bytes_list[i:i + ALBUM_CHUNK_SIZE]
 
         try:
-            # آپلود همه فایل‌های چانک
+            # آپلود همه عکس‌ها
             uploaded = []
             for idx, data in enumerate(chunk):
                 try:
-                    f = await client.upload_file(BytesIO(data))
+                    f = await client.upload_file(
+                        BytesIO(data),
+                        file_name=f"photo_{i + idx}.jpg"
+                    )
                     uploaded.append(f)
                 except Exception as e:
                     logger.warning(f"upload error: {e}")
@@ -424,38 +448,109 @@ async def send_album(client, chat_id, files_data, caption=None):
             if not uploaded:
                 continue
 
-            # تعیین کپشن: فقط روی عکس اول اولین چانک
-            cap = caption if (i == 0) else None
+            # ساخت InputMediaPhoto
+            media_list = []
+            for idx, f in enumerate(uploaded):
+                media = InputMediaPhoto(
+                    file=f,
+                    caption=caption if (i == 0 and idx == 0) else None,
+                )
+                media_list.append(InputSingleMedia(media=media))
 
-            # ارسال آلبوم
-            try:
+            # اگه فقط یه عکس بود
+            if len(media_list) == 1:
                 await client.send_file(
                     chat_id,
-                    uploaded,
-                    caption=cap,
+                    uploaded[0],
+                    caption=caption,
                     force_document=False
                 )
-                sent_count += len(uploaded)
-            except Exception as e:
-                logger.warning(f"album send error: {e}")
-                # fallback: ارسال تک تک
-                for idx, f in enumerate(uploaded):
-                    try:
-                        c = cap if idx == 0 else None
-                        await client.send_file(chat_id, f, caption=c, force_document=False)
-                        sent_count += 1
-                    except Exception as e2:
-                        logger.warning(f"single send error: {e2}")
+            else:
+                # ارسال آلبوم Photo
+                await client(SendMultiMediaRequest(
+                    peer=chat_id,
+                    multi_media=media_list
+                ))
 
+            total_sent += len(uploaded)
             await asyncio.sleep(1)
 
         except Exception as e:
-            logger.exception(f"send_album chunk error: {e}")
+            logger.exception(f"album send error: {e}")
+            # fallback: تک تک
+            for idx, f in enumerate(uploaded):
+                try:
+                    c = caption if (i == 0 and idx == 0) else None
+                    await client.send_file(
+                        chat_id, f,
+                        caption=c,
+                        force_document=False
+                    )
+                    total_sent += 1
+                except Exception as e2:
+                    logger.warning(f"single send: {e2}")
 
-    return sent_count
+    return total_sent
 
 
-# ==================== هندلر /start ====================
+# ==================== Resolve Entity (اصلاح‌شده) ====================
+async def resolve_entity(client, raw):
+    """
+    تبدیل ورودی به entity با پشتیبانی از:
+    - آیدی عددی: 123456789
+    - یوزرنیم با @: @username
+    - یوزرنیم بدون @: username
+    - لینک: https://t.me/username
+    """
+    raw = raw.strip()
+
+    # استخراج از لینک
+    if "t.me/" in raw:
+        raw = raw.split("t.me/")[-1].split("/")[0].split("?")[0]
+
+    # حذف @
+    if raw.startswith('@'):
+        raw = raw[1:]
+
+    # حالت ۱: آیدی عددی
+    if raw.isdigit():
+        try:
+            entity = await client.get_entity(int(raw))
+            logger.info(f"resolved numeric id: {raw}")
+            return entity
+        except Exception as e:
+            logger.warning(f"numeric id failed: {e}")
+
+    # حالت ۲: یوزرنیم بدون @
+    try:
+        entity = await client.get_entity(raw)
+        logger.info(f"resolved username: {raw}")
+        return entity
+    except Exception as e:
+        logger.warning(f"username failed: {e}")
+
+    # حالت ۳: یوزرنیم با @
+    try:
+        entity = await client.get_entity(f"@{raw}")
+        logger.info(f"resolved @username: {raw}")
+        return entity
+    except Exception as e:
+        logger.warning(f"@username failed: {e}")
+
+    # حالت ۴: از طریق contacts
+    try:
+        from telethon.tl.functions.contacts import ResolveUsernameRequest
+        result = await client(ResolveUsernameRequest(raw))
+        if result and result.users:
+            logger.info(f"resolved via ResolveUsername: {raw}")
+            return result.users[0]
+    except Exception as e:
+        logger.warning(f"ResolveUsername failed: {e}")
+
+    return None
+
+
+# ==================== /start ====================
 @bot.on(events.NewMessage(pattern='/start'))
 async def handle_start(event):
     if not is_owner(event.sender_id):
@@ -564,26 +659,30 @@ async def handle_callback(event):
             if not s or not s[1]:
                 await event.edit("ابتدا یک اکانت انتخاب فرمایید.", buttons=back_kb())
                 return
-
-            a = await db_get_account(s[1])
-            t_text = "انتخاب نشده"
-            if s[2]:
-                t = await db_get_template(s[2])
-                if t:
-                    t_text = t[2]
-            ch_text = s[4] if s[3] else "متصل نشده"
-
             user_states[uid] = "WAIT_TARGET_INPUT"
             await event.edit(
                 "دریافت پروفایل\n━━━━━━━━━━━━━━━━━━\n\n"
-                f"اکانت: {a[6]}\n"
-                f"قالب: {t_text}\n"
-                f"کانال: {ch_text}\n\n"
-                "━━━━━━━━━━━━━━━━━━\n"
                 "لطفاً شناسه کاربر مورد نظر را ارسال فرمایید:\n\n"
                 "• شناسه عددی: `123456789`\n"
-                "• نام کاربری: `@username`\n\n"
-                "تنها چهره‌های انسانی فیلتر و ارسال خواهند شد.",
+                "• نام کاربری: `@username`\n"
+                "• لینک: `https://t.me/username`\n\n"
+                "عکس‌ها به صورت آلبوم ارسال می‌شن.",
+                buttons=back_kb()
+            )
+
+        elif data == "menu_crop_face":
+            s = await db_get_settings(uid)
+            if not s or not s[1]:
+                await event.edit("ابتدا یک اکانت انتخاب فرمایید.", buttons=back_kb())
+                return
+            user_states[uid] = "WAIT_CROP_TARGET"
+            await event.edit(
+                "جداسازی چهره\n━━━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً شناسه کاربر مورد نظر را ارسال فرمایید:\n\n"
+                "• شناسه عددی: `123456789`\n"
+                "• نام کاربری: `@username`\n"
+                "• لینک: `https://t.me/username`\n\n"
+                "فقط چهره‌های انسانی کراپ و ارسال می‌شن.",
                 buttons=back_kb()
             )
 
@@ -623,7 +722,6 @@ async def handle_callback(event):
             s = await db_get_settings(uid)
             current = s[3] if s and s[3] else None
             title = s[4] if s and s[4] else "متصل نشده"
-
             text = (
                 "اتصال به کانال\n━━━━━━━━━━━━━━━━━━\n\n"
                 f"کانال فعلی: {title}\n\n"
@@ -705,7 +803,6 @@ async def show_account_detail(event, uid, acc_id):
     await event.edit(text, buttons=kb)
 
 
-# ==================== نمایش منو قالب‌ها ====================
 async def show_templates_menu(event, uid):
     templates = await db_get_templates(uid)
 
@@ -753,7 +850,7 @@ async def show_template_detail(event, uid, tid):
     await event.edit(text, buttons=kb)
 
 
-# ==================== هندلر پیام‌های متنی ====================
+# ==================== هندلر پیام‌ها ====================
 @bot.on(events.NewMessage)
 async def handle_message(event):
     if not is_owner(event.sender_id):
@@ -773,15 +870,11 @@ async def handle_message(event):
     try:
         if state == "WAIT_PHONE":
             if not re.match(r'^\+?[0-9]{10,15}$', text):
-                await event.respond("شماره وارد شده نامعتبر است. مجدداً ارسال فرمایید یا /cancel.")
+                await event.respond("شماره نامعتبر. /cancel")
                 return
             user_temp[uid]['phone'] = text
             user_states[uid] = "WAIT_API_ID"
-            await event.respond(
-                f"مرحله 2 از 5\n\nشماره: `{text}`\n\n"
-                "لطفاً API ID را ارسال فرمایید:\n"
-                "(عدد است، از my.telegram.org دریافت کنید)"
-            )
+            await event.respond(f"مرحله 2 از 5\n\nشماره: `{text}`\n\nلطفاً API ID:")
 
         elif state == "WAIT_API_ID":
             if not text.isdigit():
@@ -789,40 +882,28 @@ async def handle_message(event):
                 return
             user_temp[uid]['api_id'] = int(text)
             user_states[uid] = "WAIT_API_HASH"
-            await event.respond("مرحله 3 از 5\n\nلطفاً API Hash را ارسال فرمایید:")
+            await event.respond("مرحله 3 از 5\n\nلطفاً API Hash:")
 
         elif state == "WAIT_API_HASH":
             if len(text) < 20:
-                await event.respond("API Hash نامعتبر است.")
+                await event.respond("API Hash نامعتبر.")
                 return
             user_temp[uid]['api_hash'] = text
             user_states[uid] = "WAIT_CODE"
-
             phone = user_temp[uid]['phone']
             api_id = user_temp[uid]['api_id']
             api_hash = user_temp[uid]['api_hash']
-
             msg = await event.respond("در حال ارسال کد تأیید...")
-
             try:
                 client = TelegramClient(StringSession(), api_id, api_hash)
                 await client.connect()
                 sent = await client.send_code_request(phone)
                 user_temp[uid]['client'] = client
                 user_temp[uid]['phone_code_hash'] = sent.phone_code_hash
-
                 await msg.edit(
                     f"مرحله 4 از 5\n\nکد تأیید به `{phone}` ارسال شد.\n\n"
-                    "لطفاً کد را به این صورت ارسال فرمایید: `1.2.3.4.5` یا `12345`"
+                    "کد رو بفرست: `1.2.3.4.5` یا `12345`"
                 )
-            except PhoneNumberInvalidError:
-                await msg.edit("شماره نامعتبر است. /cancel را ارسال کنید.")
-                user_states.pop(uid, None)
-                user_temp.pop(uid, None)
-            except FloodWaitError as e:
-                await msg.edit(f"محدودیت تلگرام: {e.seconds} ثانیه صبر کنید.")
-                user_states.pop(uid, None)
-                user_temp.pop(uid, None)
             except Exception as e:
                 await msg.edit(f"خطا: {str(e)[:200]}")
                 user_states.pop(uid, None)
@@ -833,26 +914,17 @@ async def handle_message(event):
             if not code.isdigit():
                 await event.respond("کد باید عدد باشد.")
                 return
-
             client = user_temp[uid].get('client')
             phone = user_temp[uid]['phone']
             phone_code_hash = user_temp[uid].get('phone_code_hash')
-
             try:
                 await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
                 await finalize_account(event, uid, client)
             except SessionPasswordNeededError:
                 user_states[uid] = "WAIT_PASSWORD"
-                await event.respond(
-                    "مرحله 5 از 5\n\nاین اکانت دارای رمز دو مرحله‌ای است.\n"
-                    "لطفاً رمز عبور خود را ارسال فرمایید:"
-                )
+                await event.respond("مرحله 5 از 5\n\nاکانت دو مرحله‌ای. رمزت رو بفرست:")
             except PhoneCodeInvalidError:
-                await event.respond("کد وارد شده اشتباه است.")
-            except PhoneCodeExpiredError:
-                await event.respond("کد منقضی شده است. /cancel را ارسال کنید.")
-                user_states.pop(uid, None)
-                user_temp.pop(uid, None)
+                await event.respond("کد اشتباه.")
             except Exception as e:
                 await event.respond(f"خطا: {str(e)[:200]}")
                 user_states.pop(uid, None)
@@ -873,20 +945,15 @@ async def handle_message(event):
             user_temp[uid]['tmpl_title'] = text
             user_states[uid] = "WAIT_TEMPLATE_TEXT"
             await event.respond(
-                "لطفاً متن قالب را ارسال فرمایید:\n\n"
-                "متغیرهای قابل استفاده:\n"
-                "`{name}` — نام کامل\n"
-                "`{username}` — نام کاربری\n"
-                "`{id}` — شناسه\n"
-                "`{first_name}` — نام کوچک\n"
-                "`{last_name}` — نام خانوادگی"
+                "متن قالب رو بفرست:\n\n"
+                "متغیرها:\n`{name}` `{username}` `{id}` `{first_name}` `{last_name}`"
             )
 
         elif state == "WAIT_TEMPLATE_TEXT":
             title = user_temp[uid].get('tmpl_title', 'بدون عنوان')
             tid = await db_add_template(MY_USER_ID, title, text)
             await event.respond(
-                f"قالب «{title}» با موفقیت ذخیره شد. (شناسه: `{tid}`)",
+                f"قالب «{title}» ذخیره شد. (شناسه: `{tid}`)",
                 buttons=back_kb(b"menu_templates")
             )
             user_states.pop(uid, None)
@@ -894,7 +961,11 @@ async def handle_message(event):
 
         elif state == "WAIT_TARGET_INPUT":
             user_states.pop(uid, None)
-            asyncio.create_task(process_single_target(event, uid, text))
+            asyncio.create_task(process_single_target(event, uid, text, crop_mode=False))
+
+        elif state == "WAIT_CROP_TARGET":
+            user_states.pop(uid, None)
+            asyncio.create_task(process_single_target(event, uid, text, crop_mode=True))
 
         elif state == "WAIT_MULTI_IDS":
             user_states.pop(uid, None)
@@ -911,13 +982,11 @@ async def handle_message(event):
                 name = text.split('/')[-1]
                 if name.startswith('@'):
                     name = name[1:]
-
                 s = await db_get_settings(uid)
                 a = await db_get_account(s[1]) if s and s[1] else None
                 if not a:
-                    await event.respond("ابتدا یک اکانت انتخاب فرمایید.")
+                    await event.respond("اول اکانت انتخاب کن.")
                     return
-
                 client = None
                 try:
                     client = TelegramClient(StringSession(a[5]), a[3], a[4])
@@ -926,9 +995,7 @@ async def handle_message(event):
                     await db_update_setting(uid, channel_id=str(entity.id),
                                             channel_title=getattr(entity, 'title', name))
                     await event.respond(
-                        f"کانال با موفقیت متصل شد.\n\n"
-                        f"نام: {getattr(entity, 'title', name)}\n"
-                        f"شناسه: `{entity.id}`",
+                        f"کانال متصل شد.\nنام: {getattr(entity, 'title', name)}\nشناسه: `{entity.id}`",
                         buttons=back_kb()
                     )
                 except Exception as e:
@@ -940,13 +1007,12 @@ async def handle_message(event):
                         except:
                             pass
             else:
-                await event.respond("ورودی نامعتبر است.")
+                await event.respond("ورودی نامعتبر.")
 
     except Exception as e:
         logger.exception(f"message handler error: {e}")
 
 
-# ==================== نهایی کردن اکانت ====================
 async def finalize_account(event, uid, client):
     try:
         me = await client.get_me()
@@ -956,68 +1022,57 @@ async def finalize_account(event, uid, client):
         api_hash = user_temp[uid]['api_hash']
         acc_name = me.first_name or "بدون نام"
         username = me.username or ""
-
         acc_id = await db_add_account(MY_USER_ID, phone, api_id, api_hash,
                                       session_str, acc_name, username)
         await client.disconnect()
-
         await event.respond(
-            "اکانت با موفقیت اضافه شد\n"
-            "━━━━━━━━━━━━━━━━━━\n\n"
+            "اکانت اضافه شد\n━━━━━━━━━━━━━━━━━━\n\n"
             f"نام: {acc_name}\n"
-            f"نام کاربری: `@{username or 'ندارد'}`\n"
+            f"یوزرنیم: `@{username or 'ندارد'}`\n"
             f"شماره: `{phone}`\n"
-            f"شناسه داخلی: `{acc_id}`",
+            f"شناسه: `{acc_id}`",
             buttons=[[btn("مدیریت اکانت‌ها 📁", b"menu_accounts", "success")]]
         )
     except Exception as e:
         await event.respond(f"خطا: {str(e)[:200]}")
-
     user_states.pop(uid, None)
     user_temp.pop(uid, None)
 
 
-# ==================== Resolve Entity ====================
-async def resolve_entity(client, raw):
-    raw = raw.strip()
-    try:
-        if raw.startswith('@'):
-            raw = raw[1:]
-        if raw.isdigit():
-            return await client.get_entity(int(raw))
-        return await client.get_entity(raw)
-    except Exception as e:
-        logger.warning(f"resolve error: {e}")
-        return None
-
-
-# ==================== پردازش یک پروفایل ====================
-async def process_single_target(event, uid, target_raw):
+# ==================== پردازش پروفایل ====================
+async def process_single_target(event, uid, target_raw, crop_mode=False):
     client = None
     try:
         s = await db_get_settings(uid)
         if not s or not s[1]:
-            await event.respond("اکانت فعالی وجود ندارد.")
+            await event.respond("اکانت فعال نداری.")
             return
-
         a = await db_get_account(s[1])
         _, _, _, api_id, api_hash, session_str, _, _, _, _ = a
-
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
-
         if not await client.is_user_authorized():
-            await event.respond("سشن منقضی شده است.")
+            await event.respond("سشن منقضی شده.")
             return
 
         target = await resolve_entity(client, target_raw)
         if not target:
-            await event.respond(f"کاربر {target_raw} یافت نشد.")
+            await event.respond(
+                f"❌ کاربر `{target_raw}` پیدا نشد.\n\n"
+                "دلایل ممکن:\n"
+                "• اکانت وجود نداره\n"
+                "• یوزرنیم اشتباهه\n"
+                "• بلاک هستی\n"
+                "• Privacy محدود داره"
+            )
             return
 
-        await process_user_profile(event, client, uid, target, s[2], s[3])
+        if crop_mode:
+            await process_crop_faces(event, client, uid, target)
+        else:
+            await process_user_profile(event, client, uid, target, s[2], s[3])
     except Exception as e:
-        logger.exception(f"process_single error: {e}")
+        logger.exception(f"process error: {e}")
         try:
             await event.respond(f"خطا: {str(e)[:200]}")
         except:
@@ -1031,6 +1086,7 @@ async def process_single_target(event, uid, target_raw):
 
 
 async def process_user_profile(event, client, owner_id, target, template_id, channel_id):
+    """گرفتن پروفایل‌ها و ارسال آلبومی"""
     target_id = target.id
     first_name = target.first_name or ""
     last_name = target.last_name or ""
@@ -1047,52 +1103,39 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
 
     total = len(photo_list)
     if total == 0:
-        await event.respond(f"کاربر {full_name} پروفایلی ندارد.")
+        await event.respond(f"کاربر {full_name} پروفایلی نداره.")
         return
 
-    status_msg = await event.respond(
-        f"در حال پردازش...\n\n"
-        f"کاربر: {full_name}\n"
-        f"تعداد کل: {total}"
+    status = await event.respond(
+        f"در حال پردازش...\nکاربر: {full_name}\nتعداد: {total}"
     )
 
-    # جمع‌آوری عکس‌های تأییدشده
-    human_faces = []
+    # دانلود همه عکس‌ها
+    photos_bytes = []
     for i, photo in enumerate(photo_list):
         try:
             buf = BytesIO()
             await client.download_media(photo, buf)
             buf.seek(0)
             data = buf.getvalue()
+            # تبدیل به JPEG اگه لازم بود
             arr = np.frombuffer(data, dtype=np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is None:
-                continue
-            if is_human_face(img):
-                human_faces.append(data)
+            if img is not None:
+                ok, jpg_buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if ok:
+                    photos_bytes.append(jpg_buf.tobytes())
             if (i + 1) % 5 == 0:
                 try:
-                    await status_msg.edit(
-                        f"در حال پردازش...\n\n"
-                        f"پیشرفت: {i+1}/{total}\n"
-                        f"چهره‌های شناسایی شده: {len(human_faces)}"
-                    )
+                    await status.edit(f"در حال دانلود... {i+1}/{total}")
                 except:
                     pass
         except:
             continue
 
-    # اگه هیچ چهره‌ای پیدا نشد، همه رو بفرست
-    if not human_faces:
-        logger.info(f"هیچ چهره‌ای پیدا نشد — ارسال همه عکس‌های {full_name}")
-        for photo in photo_list:
-            try:
-                buf = BytesIO()
-                await client.download_media(photo, buf)
-                buf.seek(0)
-                human_faces.append(buf.getvalue())
-            except:
-                continue
+    if not photos_bytes:
+        await status.edit("عکسی دانلود نشد.")
+        return
 
     # متن قالب
     footer = ""
@@ -1104,64 +1147,142 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
             footer = footer.replace("{first_name}", first_name).replace("{last_name}", last_name)
             footer = footer.replace("{id}", user_id_str)
 
-    # ═══════ ارسال آلبومی به خودت ═══════
-    sent_owner = 0
-    if human_faces:
+    # ارسال آلبومی Photo
+    await status.edit(f"در حال ارسال {len(photos_bytes)} عکس...")
+    sent_owner = await send_photo_album(bot, owner_id, photos_bytes, caption=footer or None)
+
+    sent_channel = 0
+    if channel_id:
         try:
-            await status_msg.edit(
-                f"در حال ارسال آلبوم...\n\n"
-                f"کاربر: {full_name}\n"
-                f"تعداد: {len(human_faces)}"
-            )
+            sent_channel = await send_photo_album(bot, int(channel_id), photos_bytes, caption=footer or None)
         except:
             pass
 
-        sent_owner = await send_album(bot, owner_id, human_faces, caption=footer or None)
-
-    # ═══════ ارسال آلبومی به کانال ═══════
-    sent_channel = 0
-    if channel_id and human_faces:
-        try:
-            sent_channel = await send_album(bot, int(channel_id), human_faces, caption=footer or None)
-        except Exception as e:
-            logger.warning(f"channel album error: {e}")
-
     final_text = (
-        f"عملیات با موفقیت تکمیل شد\n"
+        f"✅ تکمیل شد\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
         f"نام: {full_name}\n"
-        f"نام کاربری: `@{username or 'ندارد'}`\n"
+        f"یوزرنیم: `@{username or 'ندارد'}`\n"
         f"شناسه: `{user_id_str}`\n\n"
-        f"تعداد کل پروفایل‌ها: {total}\n"
-        f"چهره‌های ارسال شده: {sent_owner}\n"
-        f"فیلتر شده: {total - len(human_faces)}"
+        f"تعداد کل: {total}\n"
+        f"ارسال شده: {sent_owner}"
     )
     if channel_id:
-        final_text += f"\nارسال شده به کانال: {sent_channel}"
+        final_text += f"\nکانال: {sent_channel}"
 
     try:
-        await status_msg.edit(final_text, buttons=back_kb())
+        await status.edit(final_text, buttons=back_kb())
     except:
         await event.respond(final_text, buttons=back_kb())
 
 
-# ==================== پردازش چند شناسه ====================
+async def process_crop_faces(event, client, owner_id, target):
+    """گرفتن پروفایل‌ها، تشخیص و کراپ چهره‌ها، ارسال به صورت Photo"""
+    target_id = target.id
+    first_name = target.first_name or ""
+    last_name = target.last_name or ""
+    full_name = (first_name + " " + last_name).strip() or "بدون نام"
+    username = target.username or ""
+    user_id_str = str(target.id)
+
+    try:
+        photos = await client(GetUserPhotosRequest(user_id=target_id, offset=0, max_id=0, limit=200))
+        photo_list = photos.photos if hasattr(photos, 'photos') else []
+    except Exception as e:
+        await event.respond(f"خطا: {str(e)[:150]}")
+        return
+
+    total = len(photo_list)
+    if total == 0:
+        await event.respond(f"کاربر {full_name} پروفایلی نداره.")
+        return
+
+    status = await event.respond(
+        f"🎭 در حال جداسازی چهره...\n\n"
+        f"کاربر: {full_name}\n"
+        f"تعداد عکس: {total}"
+    )
+
+    all_faces = []
+    for i, photo in enumerate(photo_list):
+        try:
+            buf = BytesIO()
+            await client.download_media(photo, buf)
+            buf.seek(0)
+            arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            faces = crop_faces_from_image(img)
+            all_faces.extend(faces)
+            if (i + 1) % 3 == 0:
+                try:
+                    await status.edit(
+                        f"🎭 در حال جداسازی...\n\n"
+                        f"پیشرفت: {i+1}/{total}\n"
+                        f"چهره‌های پیدا شده: {len(all_faces)}"
+                    )
+                except:
+                    pass
+        except:
+            continue
+
+    if not all_faces:
+        await status.edit(
+            f"❌ هیچ چهره‌ای پیدا نشد.\n\n"
+            f"• چهره‌ها واضح نیستن\n"
+            f"• زاویه نامناسبه\n"
+            f"• کیفیت پایینه"
+        )
+        return
+
+    # حذف تکراری‌ها (hash-based)
+    unique_faces = []
+    seen = set()
+    for face in all_faces:
+        h = hash(face[:200])
+        if h not in seen:
+            seen.add(h)
+            unique_faces.append(face)
+
+    await status.edit(
+        f"🎭 در حال ارسال...\n\n"
+        f"چهره‌های منحصربفرد: {len(unique_faces)}"
+    )
+
+    # کپشن قالب
+    footer = f"🎭 چهره‌های {full_name}"
+    if username:
+        footer += f" | @{username}"
+
+    # ارسال آلبومی Photo
+    sent = await send_photo_album(bot, owner_id, unique_faces, caption=footer)
+
+    await status.edit(
+        f"✅ تکمیل شد\n"
+        f"━━━━━━━━━━━━━━━━━━\n\n"
+        f"نام: {full_name}\n"
+        f"یوزرنیم: `@{username or 'ندارد'}`\n"
+        f"شناسه: `{user_id_str}`\n\n"
+        f"کل عکس‌ها: {total}\n"
+        f"چهره‌های ارسال شده: {sent}",
+        buttons=back_kb()
+    )
+
+
 async def process_multi_targets(event, uid, targets):
     client = None
     try:
         s = await db_get_settings(uid)
         if not s or not s[1]:
-            await event.respond("اکانت فعالی وجود ندارد.")
+            await event.respond("اکانت فعال نداری.")
             return
-
         a = await db_get_account(s[1])
         _, _, _, api_id, api_hash, session_str, _, _, _, _ = a
-
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
-
         if not await client.is_user_authorized():
-            await event.respond("سشن منقضی شده است.")
+            await event.respond("سشن منقضی شده.")
             return
 
         total = len(targets)
@@ -1171,14 +1292,9 @@ async def process_multi_targets(event, uid, targets):
 
         for idx, raw in enumerate(targets, 1):
             try:
-                await status.edit(
-                    f"در حال پردازش...\n\n"
-                    f"شناسه فعلی: {idx}/{total}\n"
-                    f"موفق: {success} | ناموفق: {failed}"
-                )
+                await status.edit(f"پردازش {idx}/{total}\nموفق: {success} | ناموفق: {failed}")
             except:
                 pass
-
             target = await resolve_entity(client, raw)
             if not target:
                 failed += 1
@@ -1191,11 +1307,7 @@ async def process_multi_targets(event, uid, targets):
             await asyncio.sleep(1)
 
         await status.edit(
-            f"عملیات تکمیل شد\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"تعداد کل: {total}\n"
-            f"موفق: {success}\n"
-            f"ناموفق: {failed}",
+            f"✅ تکمیل شد\nکل: {total}\nموفق: {success}\nناموفق: {failed}",
             buttons=back_kb()
         )
     except Exception as e:
@@ -1233,68 +1345,47 @@ async def process_silent(client, owner_id, target, template_id, channel_id):
             footer = footer.replace("{first_name}", first_name).replace("{last_name}", last_name)
             footer = footer.replace("{id}", user_id_str)
 
-    # جمع‌آوری عکس‌های تأییدشده
-    approved = []
+    photos_bytes = []
     for photo in photo_list:
         try:
             buf = BytesIO()
             await client.download_media(photo, buf)
             buf.seek(0)
-            data = buf.getvalue()
-            arr = np.frombuffer(data, dtype=np.uint8)
+            arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is None:
-                continue
-            if is_human_face(img):
-                approved.append(data)
+            if img is not None:
+                ok, jpg_buf = cv2.imencode('.jpg', img, [cv2.IMWRITE_JPEG_QUALITY, 92])
+                if ok:
+                    photos_bytes.append(jpg_buf.tobytes())
         except:
             continue
 
-    # اگه هیچی تأیید نشد، همه رو بفرست
-    if not approved:
-        logger.info(f"هیچ چهره‌ای پیدا نشد — ارسال همه عکس‌های {full_name}")
-        for photo in photo_list:
-            try:
-                buf = BytesIO()
-                await client.download_media(photo, buf)
-                buf.seek(0)
-                approved.append(buf.getvalue())
-            except:
-                continue
-
-    if not approved:
-        return
-
-    # ارسال آلبومی
-    try:
-        await send_album(bot, owner_id, approved, caption=footer or None)
-    except Exception as e:
-        logger.warning(f"silent album owner error: {e}")
-
-    if channel_id:
+    if photos_bytes:
         try:
-            await send_album(bot, int(channel_id), approved, caption=footer or None)
+            await send_photo_album(bot, owner_id, photos_bytes, caption=footer or None)
         except Exception as e:
-            logger.warning(f"silent album channel error: {e}")
+            logger.warning(f"silent album: {e}")
+
+        if channel_id:
+            try:
+                await send_photo_album(bot, int(channel_id), photos_bytes, caption=footer or None)
+            except:
+                pass
 
 
-# ==================== پردازش گروه ====================
 async def process_group(event, uid, link):
     client = None
     try:
         s = await db_get_settings(uid)
         if not s or not s[1]:
-            await event.respond("اکانت فعالی وجود ندارد.")
+            await event.respond("اکانت فعال نداری.")
             return
-
         a = await db_get_account(s[1])
         _, _, _, api_id, api_hash, session_str, _, _, _, _ = a
-
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
-
         if not await client.is_user_authorized():
-            await event.respond("سشن منقضی شده است.")
+            await event.respond("سشن منقضی شده.")
             return
 
         entity = None
@@ -1313,29 +1404,25 @@ async def process_group(event, uid, link):
                     name = name[1:]
                 entity = await client.get_entity(name)
         except Exception as e:
-            await event.respond(f"گروه یافت نشد.\n{str(e)[:200]}")
+            await event.respond(f"گروه پیدا نشد.\n{str(e)[:200]}")
             return
 
         group_title = getattr(entity, 'title', 'بدون نام')
-        status = await event.respond(
-            f"گروه: {group_title}\n"
-            f"در حال دریافت اعضا..."
-        )
+        status = await event.respond(f"گروه: {group_title}\nدر حال دریافت اعضا...")
 
         participants = []
         offset = 0
-        limit = 100
         while True:
             try:
                 result = await client(GetParticipantsRequest(
                     channel=entity, filter=ChannelParticipantsSearch(''),
-                    offset=offset, limit=limit, hash=0
+                    offset=offset, limit=100, hash=0
                 ))
                 if not result.users:
                     break
                 participants.extend(result.users)
                 offset += len(result.users)
-                if len(result.users) < limit or len(participants) >= 500:
+                if len(result.users) < 100 or len(participants) >= 500:
                     break
                 await asyncio.sleep(0.5)
             except:
@@ -1343,25 +1430,17 @@ async def process_group(event, uid, link):
 
         total = len(participants)
         if total == 0:
-            await status.edit("عضوی یافت نشد.")
+            await status.edit("عضوی پیدا نشد.")
             return
 
-        await status.edit(
-            f"گروه: {group_title}\n"
-            f"تعداد اعضا: {total}\n"
-            f"در حال پردازش..."
-        )
+        await status.edit(f"گروه: {group_title}\nتعداد: {total}\nدر حال پردازش...")
 
         success = 0
         for idx, user in enumerate(participants, 1):
             if user.bot or user.deleted:
                 continue
             try:
-                await status.edit(
-                    f"در حال پردازش...\n\n"
-                    f"پیشرفت: {idx}/{total}\n"
-                    f"موفق: {success}"
-                )
+                await status.edit(f"پردازش {idx}/{total}\nموفق: {success}")
             except:
                 pass
             try:
@@ -1372,11 +1451,7 @@ async def process_group(event, uid, link):
             await asyncio.sleep(0.5)
 
         await status.edit(
-            f"عملیات تکمیل شد\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"گروه: {group_title}\n"
-            f"تعداد کل: {total}\n"
-            f"پردازش شده: {success}",
+            f"✅ تکمیل\nگروه: {group_title}\nکل: {total}\nپردازش: {success}",
             buttons=back_kb()
         )
     except Exception as e:
@@ -1389,9 +1464,10 @@ async def process_group(event, uid, link):
                 pass
 
 
-# ==================== Main (با مدیریت FloodWait) ====================
+# ==================== Main ====================
 async def main():
     await init_db()
+    init_yunet()
 
     max_retries = 10
     connected = False
@@ -1400,26 +1476,22 @@ async def main():
         try:
             await bot.start(bot_token=BOT_TOKEN)
             me = await bot.get_me()
-            logger.info(f"ربات @{me.username} با موفقیت راه‌اندازی شد")
+            logger.info(f"ربات @{me.username} راه‌اندازی شد")
             connected = True
             break
         except FloodWaitError as e:
             wait_time = e.seconds + 30
-            logger.warning(
-                f"FloodWait: باید {e.seconds} ثانیه صبر کنم. "
-                f"الان {wait_time} ثانیه صبر می‌کنم... "
-                f"(تلاش {attempt+1}/{max_retries})"
-            )
+            logger.warning(f"FloodWait: {wait_time}s (تلاش {attempt+1}/{max_retries})")
             await asyncio.sleep(wait_time)
         except Exception as e:
-            logger.exception(f"خطا در start: {e}")
+            logger.exception(f"start error: {e}")
             await asyncio.sleep(60)
 
     if not connected:
-        logger.error("ربات بعد از چند تلاش راه‌اندازی نشد.")
+        logger.error("راه‌اندازی نشد.")
         return
 
-    logger.info("ربات آنلاین است. منتظر پیام‌ها...")
+    logger.info("ربات آنلاین است.")
     await bot.run_until_disconnected()
 
 
@@ -1427,4 +1499,4 @@ if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("ربات متوقف شد.")
+        print("متوقف شد.")
