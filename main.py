@@ -2,6 +2,7 @@
 ربات خصوصی مدیریت پروفایل
 نسخه تک‌فایل با Telethon
 دکمه‌ها با استایل رنگی (primary/success/danger)
+AI فیلتر چهره با حساسیت بالا
 """
 
 import asyncio
@@ -37,7 +38,7 @@ logger = logging.getLogger(__name__)
 # ==================== تنظیمات ====================
 BOT_TOKEN = os.environ.get(
     "TOKEN",
-    "8843126535:AAEtN5avPoX6AnYjVQAWuAUxu9_3nyr2ybg"
+    "8816493813:AAHSSd5Xz1i4jCbZ-jW9QrW8QcRAZi41BzQ"
 )
 MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -252,7 +253,7 @@ def is_owner(user_id):
     return user_id == MY_USER_ID
 
 
-# ==================== AI فیلتر چهره ====================
+# ==================== AI فیلتر چهره (حساسیت بالا) ====================
 _cascade_frontal = None
 _cascade_profile = None
 _cascade_eye = None
@@ -273,32 +274,60 @@ def _init_cascades():
 
 
 def is_human_face(img_bgr):
+    """
+    تشخیص چهره انسانی با ۴ الگوریتم و حساسیت بالا
+    """
     try:
         _init_cascades()
         h, w = img_bgr.shape[:2]
-        if w > 800:
-            scale = 800 / w
-            img_bgr = cv2.resize(img_bgr, (800, int(h * scale)))
+        if w > 1000:
+            scale = 1000 / w
+            img_bgr = cv2.resize(img_bgr, (1000, int(h * scale)))
 
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
-        min_size = max(40, int(min(gray.shape) * 0.08))
 
-        faces = _cascade_frontal.detectMultiScale(gray, 1.05, 6, minSize=(min_size, min_size))
-        if len(faces) > 0:
-            for (x, y, fw, fh) in faces:
-                roi = gray[y:y + fh, x:x + fw]
-                eyes = _cascade_eye.detectMultiScale(roi, 1.1, 4)
-                if len(eyes) >= 1:
-                    return True
+        min_size = max(25, int(min(gray.shape) * 0.05))
 
-        faces = _cascade_profile.detectMultiScale(gray, 1.05, 6, minSize=(min_size, min_size))
+        # ۱. چهره روبرو
+        faces = _cascade_frontal.detectMultiScale(
+            gray,
+            scaleFactor=1.03,
+            minNeighbors=3,
+            minSize=(min_size, min_size)
+        )
         if len(faces) > 0:
             return True
 
-        flipped = cv2.flip(gray, 1)
-        faces = _cascade_profile.detectMultiScale(flipped, 1.05, 6, minSize=(min_size, min_size))
+        # ۲. چهره نیم‌رخ
+        faces = _cascade_profile.detectMultiScale(
+            gray,
+            scaleFactor=1.03,
+            minNeighbors=3,
+            minSize=(min_size, min_size)
+        )
         if len(faces) > 0:
+            return True
+
+        # ۳. چهره نیم‌رخ آینه‌ای
+        flipped = cv2.flip(gray, 1)
+        faces = _cascade_profile.detectMultiScale(
+            flipped,
+            scaleFactor=1.03,
+            minNeighbors=3,
+            minSize=(min_size, min_size)
+        )
+        if len(faces) > 0:
+            return True
+
+        # ۴. اگه دو تا چشم پیدا شد، احتمالاً چهره هست
+        eyes = _cascade_eye.detectMultiScale(
+            gray,
+            scaleFactor=1.03,
+            minNeighbors=3,
+            minSize=(15, 15)
+        )
+        if len(eyes) >= 2:
             return True
 
         return False
@@ -429,7 +458,7 @@ async def handle_callback(event):
                 "━━━━━━━━━━━━━━━━━━\n\n"
                 "مرحله 1 از 5\n\n"
                 "لطفاً شماره موبایل اکانت را با کد کشور ارسال فرمایید:\n"
-                "مثال: +989123456789\n\n"
+                "مثال: `+989123456789`\n\n"
                 "برای انصراف دستور /cancel را ارسال کنید.",
                 buttons=back_kb(b"menu_accounts")
             )
@@ -504,8 +533,8 @@ async def handle_callback(event):
                 f"کانال: {ch_text}\n\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 "لطفاً شناسه کاربر مورد نظر را ارسال فرمایید:\n\n"
-                "• شناسه عددی: 123456789\n"
-                "• نام کاربری: @username\n\n"
+                "• شناسه عددی: `123456789`\n"
+                "• نام کاربری: `@username`\n\n"
                 "تنها چهره‌های انسانی فیلتر و ارسال خواهند شد.",
                 buttons=back_kb()
             )
@@ -519,9 +548,9 @@ async def handle_callback(event):
             await event.edit(
                 "چند شناسه همزمان\n━━━━━━━━━━━━━━━━━━\n\n"
                 "لطفاً شناسه‌ها را هر کدام در یک خط ارسال فرمایید:\n\n"
-                "123456789\n"
-                "@username1\n"
-                "@username2\n\n"
+                "`123456789`\n"
+                "`@username1`\n"
+                "`@username2`\n\n"
                 "برای انصراف دستور /cancel را ارسال کنید.",
                 buttons=back_kb()
             )
@@ -535,9 +564,9 @@ async def handle_callback(event):
             await event.edit(
                 "گروه یا کانال\n━━━━━━━━━━━━━━━━━━\n\n"
                 "لطفاً لینک گروه یا کانال را ارسال فرمایید:\n\n"
-                "• https://t.me/groupname\n"
-                "• https://t.me/+AbCdEf123\n"
-                "• @groupname\n\n"
+                "• `https://t.me/groupname`\n"
+                "• `https://t.me/+AbCdEf123`\n"
+                "• `@groupname`\n\n"
                 "برای انصراف دستور /cancel را ارسال کنید.",
                 buttons=back_kb()
             )
@@ -554,7 +583,7 @@ async def handle_callback(event):
                 "جهت اتصال:\n"
                 "1. ربات را به کانال اضافه کنید\n"
                 "2. یک پیام از کانال را فوروارد کنید\n"
-                "3. یا نام کاربری کانال را ارسال کنید: @channel\n\n"
+                "3. یا نام کاربری کانال را ارسال کنید: `@channel`\n\n"
                 "برای انصراف دستور /cancel را ارسال کنید."
             )
             kb = []
@@ -584,9 +613,9 @@ async def show_accounts_menu(event, uid):
         for i, a in enumerate(accounts, 1):
             lines.append(
                 f"{i}. {a[6]}\n"
-                f"   شماره: {a[2]}\n"
-                f"   نام کاربری: @{a[7] or 'ندارد'}\n"
-                f"   شناسه: {a[0]}"
+                f"   شماره: `{a[2]}`\n"
+                f"   نام کاربری: `@{a[7] or 'ندارد'}`\n"
+                f"   شناسه: `{a[0]}`"
             )
         text = "\n".join(lines)
 
@@ -611,9 +640,9 @@ async def show_account_detail(event, uid, acc_id):
     text = (
         "اطلاعات اکانت\n━━━━━━━━━━━━━━━━━━\n\n"
         f"نام: {a[6]}\n"
-        f"نام کاربری: @{a[7] or 'ندارد'}\n"
-        f"شماره: {a[2]}\n"
-        f"API ID: {a[3]}\n"
+        f"نام کاربری: `@{a[7] or 'ندارد'}`\n"
+        f"شماره: `{a[2]}`\n"
+        f"API ID: `{a[3]}`\n"
         f"تاریخ افزودن: {a[8][:10]}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"{'این اکانت در حال حاضر فعال است.' if is_current else 'این اکانت فعال نیست.'}"
@@ -662,7 +691,7 @@ async def show_template_detail(event, uid, tid):
     text = (
         "اطلاعات قالب\n━━━━━━━━━━━━━━━━━━\n\n"
         f"عنوان: {t[2]}\n\n"
-        f"متن:\n{t[3]}\n\n"
+        f"متن:\n`{t[3]}`\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         f"{'این قالب در حال حاضر فعال است.' if is_current else 'این قالب فعال نیست.'}"
     )
@@ -701,7 +730,7 @@ async def handle_message(event):
             user_temp[uid]['phone'] = text
             user_states[uid] = "WAIT_API_ID"
             await event.respond(
-                f"مرحله 2 از 5\n\nشماره: {text}\n\n"
+                f"مرحله 2 از 5\n\nشماره: `{text}`\n\n"
                 "لطفاً API ID را ارسال فرمایید:\n"
                 "(عدد است، از my.telegram.org دریافت کنید)"
             )
@@ -735,8 +764,8 @@ async def handle_message(event):
                 user_temp[uid]['phone_code_hash'] = sent.phone_code_hash
 
                 await msg.edit(
-                    f"مرحله 4 از 5\n\nکد تأیید به {phone} ارسال شد.\n\n"
-                    "لطفاً کد را به این صورت ارسال فرمایید: 1.2.3.4.5 یا 12345"
+                    f"مرحله 4 از 5\n\nکد تأیید به `{phone}` ارسال شد.\n\n"
+                    "لطفاً کد را به این صورت ارسال فرمایید: `1.2.3.4.5` یا `12345`"
                 )
             except PhoneNumberInvalidError:
                 await msg.edit("شماره نامعتبر است. /cancel را ارسال کنید.")
@@ -798,18 +827,18 @@ async def handle_message(event):
             await event.respond(
                 "لطفاً متن قالب را ارسال فرمایید:\n\n"
                 "متغیرهای قابل استفاده:\n"
-                "{name} — نام کامل\n"
-                "{username} — نام کاربری\n"
-                "{id} — شناسه\n"
-                "{first_name} — نام کوچک\n"
-                "{last_name} — نام خانوادگی"
+                "`{name}` — نام کامل\n"
+                "`{username}` — نام کاربری\n"
+                "`{id}` — شناسه\n"
+                "`{first_name}` — نام کوچک\n"
+                "`{last_name}` — نام خانوادگی"
             )
 
         elif state == "WAIT_TEMPLATE_TEXT":
             title = user_temp[uid].get('tmpl_title', 'بدون عنوان')
             tid = await db_add_template(MY_USER_ID, title, text)
             await event.respond(
-                f"قالب «{title}» با موفقیت ذخیره شد. (شناسه: {tid})",
+                f"قالب «{title}» با موفقیت ذخیره شد. (شناسه: `{tid}`)",
                 buttons=back_kb(b"menu_templates")
             )
             user_states.pop(uid, None)
@@ -851,7 +880,7 @@ async def handle_message(event):
                     await event.respond(
                         f"کانال با موفقیت متصل شد.\n\n"
                         f"نام: {getattr(entity, 'title', name)}\n"
-                        f"شناسه: {entity.id}",
+                        f"شناسه: `{entity.id}`",
                         buttons=back_kb()
                     )
                 except Exception as e:
@@ -888,9 +917,9 @@ async def finalize_account(event, uid, client):
             "اکانت با موفقیت اضافه شد\n"
             "━━━━━━━━━━━━━━━━━━\n\n"
             f"نام: {acc_name}\n"
-            f"نام کاربری: @{username or 'ندارد'}\n"
-            f"شماره: {phone}\n"
-            f"شناسه داخلی: {acc_id}",
+            f"نام کاربری: `@{username or 'ندارد'}`\n"
+            f"شماره: `{phone}`\n"
+            f"شناسه داخلی: `{acc_id}`",
             buttons=[[btn("مدیریت اکانت‌ها 📁", b"menu_accounts", "success")]]
         )
     except Exception as e:
@@ -979,6 +1008,7 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
         f"تعداد کل: {total}"
     )
 
+    # جمع‌آوری عکس‌های تأییدشده
     human_faces = []
     for i, photo in enumerate(photo_list):
         try:
@@ -1004,6 +1034,20 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
         except:
             continue
 
+    # ═══════ اگه هیچ چهره‌ای پیدا نشد، همه رو بفرست ═══════
+    if not human_faces:
+        logger.info(f"هیچ چهره‌ای پیدا نشد — ارسال همه عکس‌های {full_name}")
+        for photo in photo_list:
+            try:
+                buf = BytesIO()
+                await client.download_media(photo, buf)
+                buf.seek(0)
+                data = buf.getvalue()
+                human_faces.append(data)
+            except:
+                continue
+
+    # متن قالب
     footer = ""
     if template_id:
         t = await db_get_template(template_id)
@@ -1034,9 +1078,9 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
     final_text = (
         f"عملیات با موفقیت تکمیل شد\n"
         f"━━━━━━━━━━━━━━━━━━\n\n"
-        f"کاربر: {full_name}\n"
-        f"نام کاربری: @{username or 'ندارد'}\n"
-        f"شناسه: {user_id_str}\n\n"
+        f"نام: {full_name}\n"
+        f"نام کاربری: `@{username or 'ندارد'}`\n"
+        f"شناسه: `{user_id_str}`\n\n"
         f"تعداد کل پروفایل‌ها: {total}\n"
         f"چهره‌های ارسال شده: {sent_owner}\n"
         f"فیلتر شده: {total - sent_owner}"
@@ -1138,7 +1182,8 @@ async def process_silent(client, owner_id, target, template_id, channel_id):
             footer = footer.replace("{first_name}", first_name).replace("{last_name}", last_name)
             footer = footer.replace("{id}", user_id_str)
 
-    sent = 0
+    # جمع‌آوری عکس‌های تأییدشده
+    approved = []
     for photo in photo_list:
         try:
             buf = BytesIO()
@@ -1150,18 +1195,35 @@ async def process_silent(client, owner_id, target, template_id, channel_id):
             if img is None:
                 continue
             if is_human_face(img):
-                caption = footer if sent == 0 else None
+                approved.append(data)
+        except:
+            continue
+
+    # اگه هیچی تأیید نشد، همه رو بفرست
+    if not approved:
+        logger.info(f"هیچ چهره‌ای پیدا نشد — ارسال همه عکس‌های {full_name}")
+        for photo in photo_list:
+            try:
+                buf = BytesIO()
+                await client.download_media(photo, buf)
+                buf.seek(0)
+                data = buf.getvalue()
+                approved.append(data)
+            except:
+                continue
+
+    sent = 0
+    for data in approved:
+        try:
+            caption = footer if sent == 0 else None
+            await bot.send_file(owner_id, data, caption=caption)
+            if channel_id:
                 try:
-                    await bot.send_file(owner_id, data, caption=caption)
+                    await bot.send_file(int(channel_id), data, caption=caption)
                 except:
                     pass
-                if channel_id:
-                    try:
-                        await bot.send_file(int(channel_id), data, caption=caption)
-                    except:
-                        pass
-                sent += 1
-                await asyncio.sleep(0.3)
+            sent += 1
+            await asyncio.sleep(0.3)
         except:
             continue
 
@@ -1281,7 +1343,6 @@ async def process_group(event, uid, link):
 async def main():
     await init_db()
 
-    # ═══════ مدیریت FloodWait ═══════
     max_retries = 10
     connected = False
 
