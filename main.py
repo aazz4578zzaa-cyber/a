@@ -3,6 +3,7 @@
 نسخه تک‌فایل با Telethon
 دکمه‌ها با استایل رنگی (primary/success/danger)
 AI فیلتر چهره با حساسیت بالا
+ارسال آلبومی (Media Group)
 """
 
 import asyncio
@@ -38,13 +39,15 @@ logger = logging.getLogger(__name__)
 # ==================== تنظیمات ====================
 BOT_TOKEN = os.environ.get(
     "TOKEN",
-    "8843126535:AAEtN5avPoX6AnYjVQAWuAUxu9_3nyr2ybg"
+    "8816493813:AAHSSd5Xz1i4jCbZ-jW9QrW8QcRAZi41BzQ"
 )
 MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
+
+ALBUM_CHUNK_SIZE = 10  # حداکثر عکس در هر آلبوم (تلگرام = 10)
 
 
 # ==================== State ====================
@@ -274,9 +277,7 @@ def _init_cascades():
 
 
 def is_human_face(img_bgr):
-    """
-    تشخیص چهره انسانی با ۴ الگوریتم و حساسیت بالا
-    """
+    """تشخیص چهره انسانی با ۴ الگوریتم و حساسیت بالا"""
     try:
         _init_cascades()
         h, w = img_bgr.shape[:2]
@@ -286,14 +287,11 @@ def is_human_face(img_bgr):
 
         gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
         gray = cv2.equalizeHist(gray)
-
         min_size = max(25, int(min(gray.shape) * 0.05))
 
         # ۱. چهره روبرو
         faces = _cascade_frontal.detectMultiScale(
-            gray,
-            scaleFactor=1.03,
-            minNeighbors=3,
+            gray, scaleFactor=1.03, minNeighbors=3,
             minSize=(min_size, min_size)
         )
         if len(faces) > 0:
@@ -301,9 +299,7 @@ def is_human_face(img_bgr):
 
         # ۲. چهره نیم‌رخ
         faces = _cascade_profile.detectMultiScale(
-            gray,
-            scaleFactor=1.03,
-            minNeighbors=3,
+            gray, scaleFactor=1.03, minNeighbors=3,
             minSize=(min_size, min_size)
         )
         if len(faces) > 0:
@@ -312,20 +308,15 @@ def is_human_face(img_bgr):
         # ۳. چهره نیم‌رخ آینه‌ای
         flipped = cv2.flip(gray, 1)
         faces = _cascade_profile.detectMultiScale(
-            flipped,
-            scaleFactor=1.03,
-            minNeighbors=3,
+            flipped, scaleFactor=1.03, minNeighbors=3,
             minSize=(min_size, min_size)
         )
         if len(faces) > 0:
             return True
 
-        # ۴. اگه دو تا چشم پیدا شد، احتمالاً چهره هست
+        # ۴. اگه دو تا چشم پیدا شد
         eyes = _cascade_eye.detectMultiScale(
-            gray,
-            scaleFactor=1.03,
-            minNeighbors=3,
-            minSize=(15, 15)
+            gray, scaleFactor=1.03, minNeighbors=3, minSize=(15, 15)
         )
         if len(eyes) >= 2:
             return True
@@ -338,10 +329,7 @@ def is_human_face(img_bgr):
 
 # ==================== دکمه‌های رنگی ====================
 def btn(text, data, style=None):
-    """
-    ساخت دکمه با استایل رنگی
-    style: 'primary' (آبی) | 'success' (سبز) | 'danger' (قرمز) | None
-    """
+    """ساخت دکمه با استایل رنگی"""
     try:
         if style in ("primary", "success", "danger"):
             return Button.inline(text, data, style=style)
@@ -405,6 +393,66 @@ async def main_menu_text(owner_id):
 
 # ==================== ربات اصلی ====================
 bot = TelegramClient(StringSession(), BOT_API_ID, BOT_API_HASH)
+
+
+# ==================== توابع کمکی برای ارسال آلبوم ====================
+async def send_album(client, chat_id, files_data, caption=None):
+    """
+    ارسال لیست عکس‌ها به صورت آلبوم (Media Group)
+    files_data: لیست بایت‌های عکس
+    caption: کپشن روی عکس اول
+    """
+    if not files_data:
+        return 0
+
+    sent_count = 0
+
+    # تکه‌تکه کردن به آلبوم‌های حداکثر 10 تایی
+    for i in range(0, len(files_data), ALBUM_CHUNK_SIZE):
+        chunk = files_data[i:i + ALBUM_CHUNK_SIZE]
+
+        try:
+            # آپلود همه فایل‌های چانک
+            uploaded = []
+            for idx, data in enumerate(chunk):
+                try:
+                    f = await client.upload_file(BytesIO(data))
+                    uploaded.append(f)
+                except Exception as e:
+                    logger.warning(f"upload error: {e}")
+
+            if not uploaded:
+                continue
+
+            # تعیین کپشن: فقط روی عکس اول اولین چانک
+            cap = caption if (i == 0) else None
+
+            # ارسال آلبوم
+            try:
+                await client.send_file(
+                    chat_id,
+                    uploaded,
+                    caption=cap,
+                    force_document=False
+                )
+                sent_count += len(uploaded)
+            except Exception as e:
+                logger.warning(f"album send error: {e}")
+                # fallback: ارسال تک تک
+                for idx, f in enumerate(uploaded):
+                    try:
+                        c = cap if idx == 0 else None
+                        await client.send_file(chat_id, f, caption=c, force_document=False)
+                        sent_count += 1
+                    except Exception as e2:
+                        logger.warning(f"single send error: {e2}")
+
+            await asyncio.sleep(1)
+
+        except Exception as e:
+            logger.exception(f"send_album chunk error: {e}")
+
+    return sent_count
 
 
 # ==================== هندلر /start ====================
@@ -1034,7 +1082,7 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
         except:
             continue
 
-    # ═══════ اگه هیچ چهره‌ای پیدا نشد، همه رو بفرست ═══════
+    # اگه هیچ چهره‌ای پیدا نشد، همه رو بفرست
     if not human_faces:
         logger.info(f"هیچ چهره‌ای پیدا نشد — ارسال همه عکس‌های {full_name}")
         for photo in photo_list:
@@ -1042,8 +1090,7 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
                 buf = BytesIO()
                 await client.download_media(photo, buf)
                 buf.seek(0)
-                data = buf.getvalue()
-                human_faces.append(data)
+                human_faces.append(buf.getvalue())
             except:
                 continue
 
@@ -1057,23 +1104,27 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
             footer = footer.replace("{first_name}", first_name).replace("{last_name}", last_name)
             footer = footer.replace("{id}", user_id_str)
 
+    # ═══════ ارسال آلبومی به خودت ═══════
     sent_owner = 0
-    sent_channel = 0
-
-    for idx, data in enumerate(human_faces):
-        caption = footer if idx == 0 else None
+    if human_faces:
         try:
-            await bot.send_file(owner_id, data, caption=caption)
-            sent_owner += 1
+            await status_msg.edit(
+                f"در حال ارسال آلبوم...\n\n"
+                f"کاربر: {full_name}\n"
+                f"تعداد: {len(human_faces)}"
+            )
+        except:
+            pass
+
+        sent_owner = await send_album(bot, owner_id, human_faces, caption=footer or None)
+
+    # ═══════ ارسال آلبومی به کانال ═══════
+    sent_channel = 0
+    if channel_id and human_faces:
+        try:
+            sent_channel = await send_album(bot, int(channel_id), human_faces, caption=footer or None)
         except Exception as e:
-            logger.warning(f"send to owner: {e}")
-        if channel_id:
-            try:
-                await bot.send_file(int(channel_id), data, caption=caption)
-                sent_channel += 1
-            except:
-                pass
-        await asyncio.sleep(0.3)
+            logger.warning(f"channel album error: {e}")
 
     final_text = (
         f"عملیات با موفقیت تکمیل شد\n"
@@ -1083,7 +1134,7 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
         f"شناسه: `{user_id_str}`\n\n"
         f"تعداد کل پروفایل‌ها: {total}\n"
         f"چهره‌های ارسال شده: {sent_owner}\n"
-        f"فیلتر شده: {total - sent_owner}"
+        f"فیلتر شده: {total - len(human_faces)}"
     )
     if channel_id:
         final_text += f"\nارسال شده به کانال: {sent_channel}"
@@ -1207,25 +1258,24 @@ async def process_silent(client, owner_id, target, template_id, channel_id):
                 buf = BytesIO()
                 await client.download_media(photo, buf)
                 buf.seek(0)
-                data = buf.getvalue()
-                approved.append(data)
+                approved.append(buf.getvalue())
             except:
                 continue
 
-    sent = 0
-    for data in approved:
+    if not approved:
+        return
+
+    # ارسال آلبومی
+    try:
+        await send_album(bot, owner_id, approved, caption=footer or None)
+    except Exception as e:
+        logger.warning(f"silent album owner error: {e}")
+
+    if channel_id:
         try:
-            caption = footer if sent == 0 else None
-            await bot.send_file(owner_id, data, caption=caption)
-            if channel_id:
-                try:
-                    await bot.send_file(int(channel_id), data, caption=caption)
-                except:
-                    pass
-            sent += 1
-            await asyncio.sleep(0.3)
-        except:
-            continue
+            await send_album(bot, int(channel_id), approved, caption=footer or None)
+        except Exception as e:
+            logger.warning(f"silent album channel error: {e}")
 
 
 # ==================== پردازش گروه ====================
