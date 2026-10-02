@@ -1,7 +1,7 @@
 """
 ربات مدیریت پروفایل + جداسازی چهره
 - به آیدی/یوزرنیم می‌دی → تمام پروفایل‌هاش رو می‌گیره
-- چهره‌های موجود در عکس‌ها رو تشخیص می‌ده
+- چهره‌های موجود در عکس‌ها رو با YuNet تشخیص می‌ده
 - هر چهره رو کراپ می‌کنه
 - به صورت Photo (آلبوم) می‌فرسته — نه فایل
 """
@@ -43,13 +43,12 @@ logger = logging.getLogger(__name__)
 
 
 # ==================== تنظیمات ====================
-BOT_TOKEN = os.environ.get(
-    "TOKEN",
-    "8816493813:AAHSSd5Xz1i4jCbZ-jW9QrW8QcRAZi41BzQ"
-)
+BOT_TOKEN = os.environ.get("TOKEN")
+if not BOT_TOKEN:
+    raise ValueError("TOKEN environment variable is not set!")
+
 MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))
-DATABASE_URL = os.environ.get("DATABASE_URL", 
-                              "8843126535:AAEtN5avPoX6AnYjVQAWuAUxu9_3nyr2ybg")
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
@@ -106,10 +105,7 @@ def init_yunet():
 
 
 def crop_faces_from_image(img_bgr):
-    """
-    تشخیص و کراپ چهره‌ها از یه عکس
-    خروجی: لیست بایت‌های عکس‌های کراپ‌شده
-    """
+    """تشخیص و کراپ چهره‌ها از یه عکس"""
     detector = init_yunet()
     if detector is None:
         return []
@@ -419,12 +415,9 @@ async def main_menu_text(owner_id):
 bot = TelegramClient(StringSession(), BOT_API_ID, BOT_API_HASH)
 
 
-# ==================== ارسال آلبومی به صورت Photo ====================
+# ==================== ارسال آلبومی Photo ====================
 async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
-    """
-    ارسال لیست عکس‌های بایتی به صورت آلبوم Photo
-    (نه فایل، نه Document)
-    """
+    """ارسال لیست عکس‌ها به صورت آلبوم Photo (نه فایل)"""
     if not photo_bytes_list:
         return 0
 
@@ -434,7 +427,6 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
         chunk = photo_bytes_list[i:i + ALBUM_CHUNK_SIZE]
 
         try:
-            # آپلود همه عکس‌ها
             uploaded = []
             for idx, data in enumerate(chunk):
                 try:
@@ -449,7 +441,6 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
             if not uploaded:
                 continue
 
-            # ساخت InputMediaPhoto
             media_list = []
             for idx, f in enumerate(uploaded):
                 media = InputMediaPhoto(
@@ -458,16 +449,13 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
                 )
                 media_list.append(InputSingleMedia(media=media))
 
-            # اگه فقط یه عکس بود
             if len(media_list) == 1:
                 await client.send_file(
-                    chat_id,
-                    uploaded[0],
+                    chat_id, uploaded[0],
                     caption=caption,
                     force_document=False
                 )
             else:
-                # ارسال آلبوم Photo
                 await client(SendMultiMediaRequest(
                     peer=chat_id,
                     multi_media=media_list
@@ -478,15 +466,10 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
 
         except Exception as e:
             logger.exception(f"album send error: {e}")
-            # fallback: تک تک
             for idx, f in enumerate(uploaded):
                 try:
                     c = caption if (i == 0 and idx == 0) else None
-                    await client.send_file(
-                        chat_id, f,
-                        caption=c,
-                        force_document=False
-                    )
+                    await client.send_file(chat_id, f, caption=c, force_document=False)
                     total_sent += 1
                 except Exception as e2:
                     logger.warning(f"single send: {e2}")
@@ -494,26 +477,17 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
     return total_sent
 
 
-# ==================== Resolve Entity (اصلاح‌شده) ====================
+# ==================== Resolve Entity ====================
 async def resolve_entity(client, raw):
-    """
-    تبدیل ورودی به entity با پشتیبانی از:
-    - آیدی عددی: 123456789
-    - یوزرنیم با @: @username
-    - یوزرنیم بدون @: username
-    - لینک: https://t.me/username
-    """
+    """تبدیل ورودی به entity با پشتیبانی از آیدی/یوزرنیم/لینک"""
     raw = raw.strip()
 
-    # استخراج از لینک
     if "t.me/" in raw:
         raw = raw.split("t.me/")[-1].split("/")[0].split("?")[0]
 
-    # حذف @
     if raw.startswith('@'):
         raw = raw[1:]
 
-    # حالت ۱: آیدی عددی
     if raw.isdigit():
         try:
             entity = await client.get_entity(int(raw))
@@ -522,7 +496,6 @@ async def resolve_entity(client, raw):
         except Exception as e:
             logger.warning(f"numeric id failed: {e}")
 
-    # حالت ۲: یوزرنیم بدون @
     try:
         entity = await client.get_entity(raw)
         logger.info(f"resolved username: {raw}")
@@ -530,7 +503,6 @@ async def resolve_entity(client, raw):
     except Exception as e:
         logger.warning(f"username failed: {e}")
 
-    # حالت ۳: یوزرنیم با @
     try:
         entity = await client.get_entity(f"@{raw}")
         logger.info(f"resolved @username: {raw}")
@@ -538,7 +510,6 @@ async def resolve_entity(client, raw):
     except Exception as e:
         logger.warning(f"@username failed: {e}")
 
-    # حالت ۴: از طریق contacts
     try:
         from telethon.tl.functions.contacts import ResolveUsernameRequest
         result = await client(ResolveUsernameRequest(raw))
@@ -667,7 +638,7 @@ async def handle_callback(event):
                 "• شناسه عددی: `123456789`\n"
                 "• نام کاربری: `@username`\n"
                 "• لینک: `https://t.me/username`\n\n"
-                "عکس‌ها به صورت آلبوم ارسال می‌شن.",
+                "عکس‌ها به صورت آلبوم Photo ارسال می‌شن.",
                 buttons=back_kb()
             )
 
@@ -1087,7 +1058,7 @@ async def process_single_target(event, uid, target_raw, crop_mode=False):
 
 
 async def process_user_profile(event, client, owner_id, target, template_id, channel_id):
-    """گرفتن پروفایل‌ها و ارسال آلبومی"""
+    """گرفتن پروفایل‌ها و ارسال آلبومی Photo"""
     target_id = target.id
     first_name = target.first_name or ""
     last_name = target.last_name or ""
@@ -1111,7 +1082,6 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
         f"در حال پردازش...\nکاربر: {full_name}\nتعداد: {total}"
     )
 
-    # دانلود همه عکس‌ها
     photos_bytes = []
     for i, photo in enumerate(photo_list):
         try:
@@ -1119,7 +1089,6 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
             await client.download_media(photo, buf)
             buf.seek(0)
             data = buf.getvalue()
-            # تبدیل به JPEG اگه لازم بود
             arr = np.frombuffer(data, dtype=np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             if img is not None:
@@ -1138,7 +1107,6 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
         await status.edit("عکسی دانلود نشد.")
         return
 
-    # متن قالب
     footer = ""
     if template_id:
         t = await db_get_template(template_id)
@@ -1148,7 +1116,6 @@ async def process_user_profile(event, client, owner_id, target, template_id, cha
             footer = footer.replace("{first_name}", first_name).replace("{last_name}", last_name)
             footer = footer.replace("{id}", user_id_str)
 
-    # ارسال آلبومی Photo
     await status.edit(f"در حال ارسال {len(photos_bytes)} عکس...")
     sent_owner = await send_photo_album(bot, owner_id, photos_bytes, caption=footer or None)
 
@@ -1237,7 +1204,7 @@ async def process_crop_faces(event, client, owner_id, target):
         )
         return
 
-    # حذف تکراری‌ها (hash-based)
+    # حذف تکراری‌ها
     unique_faces = []
     seen = set()
     for face in all_faces:
@@ -1251,12 +1218,10 @@ async def process_crop_faces(event, client, owner_id, target):
         f"چهره‌های منحصربفرد: {len(unique_faces)}"
     )
 
-    # کپشن قالب
     footer = f"🎭 چهره‌های {full_name}"
     if username:
         footer += f" | @{username}"
 
-    # ارسال آلبومی Photo
     sent = await send_photo_album(bot, owner_id, unique_faces, caption=footer)
 
     await status.edit(
