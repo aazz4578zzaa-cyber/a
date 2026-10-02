@@ -1,9 +1,8 @@
 """
 ربات مدیریت پروفایل + جداسازی چهره
-- به آیدی/یوزرنیم می‌دی → تمام پروفایل‌هاش رو می‌گیره
-- چهره‌های موجود در عکس‌ها رو با YuNet تشخیص می‌ده
-- هر چهره رو کراپ می‌کنه
-- به صورت Photo (آلبوم) می‌فرسته — نه فایل
+- چند مالک (ADMIN_IDS)
+- دریافت پروفایل + ارسال آلبومی Photo
+- جداسازی چهره با YuNet
 """
 
 import asyncio
@@ -47,7 +46,15 @@ BOT_TOKEN = os.environ.get("TOKEN")
 if not BOT_TOKEN:
     raise ValueError("TOKEN environment variable is not set!")
 
-MY_USER_ID = int(os.environ.get("MY_USER_ID", "7803165903"))
+# لیست مالکان — با کاما جدا شدن
+ADMIN_IDS_RAW = os.environ.get("ADMIN_IDS", "8055930343,7803165903")
+ADMIN_IDS = [int(x.strip()) for x in ADMIN_IDS_RAW.split(",") if x.strip().isdigit()]
+
+if not ADMIN_IDS:
+    raise ValueError("ADMIN_IDS environment variable is not set!")
+
+PRIMARY_OWNER = ADMIN_IDS[0]
+
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
@@ -347,7 +354,7 @@ async def db_update_setting(owner_id, **kwargs):
 
 
 def is_owner(user_id):
-    return user_id == MY_USER_ID
+    return user_id in ADMIN_IDS
 
 
 # ==================== دکمه‌ها ====================
@@ -923,7 +930,7 @@ async def handle_message(event):
 
         elif state == "WAIT_TEMPLATE_TEXT":
             title = user_temp[uid].get('tmpl_title', 'بدون عنوان')
-            tid = await db_add_template(MY_USER_ID, title, text)
+            tid = await db_add_template(uid, title, text)
             await event.respond(
                 f"قالب «{title}» ذخیره شد. (شناسه: `{tid}`)",
                 buttons=back_kb(b"menu_templates")
@@ -994,7 +1001,7 @@ async def finalize_account(event, uid, client):
         api_hash = user_temp[uid]['api_hash']
         acc_name = me.first_name or "بدون نام"
         username = me.username or ""
-        acc_id = await db_add_account(MY_USER_ID, phone, api_id, api_hash,
+        acc_id = await db_add_account(uid, phone, api_id, api_hash,
                                       session_str, acc_name, username)
         await client.disconnect()
         await event.respond(
@@ -1204,7 +1211,6 @@ async def process_crop_faces(event, client, owner_id, target):
         )
         return
 
-    # حذف تکراری‌ها
     unique_faces = []
     seen = set()
     for face in all_faces:
@@ -1434,6 +1440,8 @@ async def process_group(event, uid, link):
 async def main():
     await init_db()
     init_yunet()
+
+    logger.info(f"مالکان: {ADMIN_IDS}")
 
     max_retries = 10
     connected = False
