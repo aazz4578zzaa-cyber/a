@@ -70,6 +70,7 @@ async def init_db():
             USE_POSTGRES = True
 
             async with _pool.acquire() as conn:
+                # ⚠️ مهم: owner_id از نوع BIGINT هست، نه TEXT
                 await conn.execute('''
                     CREATE TABLE IF NOT EXISTS accounts (
                         id SERIAL PRIMARY KEY,
