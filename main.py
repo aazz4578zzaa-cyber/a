@@ -1,11 +1,7 @@
 """
 ربات دریافت پروفایل
-- تشخیص چهره انسانی سخت‌گیرانه (وضوح + رنگ پوست + نسبت چهره)
-- پشتیبانی از چند آیدی
-- دکمه شیشه‌ای شماره
-- صفحه عددی Inline برای کد
-- فعال‌سازی خودکار اکانت و قالب
-- دکمه تایید برای ارسال به کانال
+- تشخیص چهره انسانی سخت‌گیرانه
+- متن‌های رسمی و کتابی
 """
 
 import asyncio
@@ -61,21 +57,24 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
 
-# ═══════════════ تنظیمات تشخیص چهره (سخت‌گیرانه) ═══════════════
+# ═══════════════ تنظیمات تشخیص چهره ═══════════════
 MAX_PHOTOS_TOTAL = 10
-FACE_CONFIDENCE = 0.7        # اعتماد بالا
-MIN_FACE_SIZE = 60           # چهره باید بزرگ باشه
-MAX_FACES_PER_IMAGE = 3      # حداکثر 3 چهره در هر عکس
-MIN_FACE_RATIO = 0.6         # نسبت ابعاد چهره انسانی
+FACE_CONFIDENCE = 0.7
+MIN_FACE_SIZE = 60
+MAX_FACES_PER_IMAGE = 3
+MIN_FACE_RATIO = 0.6
 MAX_FACE_RATIO = 1.6
-MIN_SHARPNESS = 250          # وضوح بالا (حذف نقاشی/انیمیشن)
-MIN_SKIN_RATIO = 0.35        # رنگ پوست بالا (حذف گربه/سگ)
-MIN_FACE_AREA = 0.03         # چهره حداقل 3% کل عکس باشه
+MIN_SHARPNESS = 250
+MIN_SKIN_RATIO = 0.35
+MIN_FACE_AREA = 0.03
 
 # ═══════════════ ویدیو ═══════════════
 VIDEO_MAX_SIZE_MB = 20
 VIDEO_FRAME_SKIP = 30
 VIDEO_MAX_FRAMES = 10
+
+# ═══════════════ محدودیت کپشن تلگرام ═══════════════
+MAX_CAPTION_LENGTH = 1000
 
 
 # ==================== State ====================
@@ -122,15 +121,7 @@ def init_yunet():
 
 
 def has_human_face(img_bgr):
-    """
-    تشخیص چهره انسانی واقعی با فیلترهای سخت‌گیرانه:
-    1. اعتماد بالا (score >= 0.7)
-    2. سایز بزرگ (>= 60px)
-    3. نسبت ابعاد انسانی (0.6-1.6)
-    4. وضوح بالا (sharpness >= 250)
-    5. رنگ پوست (skin ratio >= 0.35)
-    6. چهره حداقل 3% کل عکس
-    """
+    """تشخیص چهره انسانی با فیلترهای سخت‌گیرانه"""
     detector = init_yunet()
     if detector is None:
         return False
@@ -161,25 +152,19 @@ def has_human_face(img_bgr):
             real_fw = fw * ratio_w
             real_fh = fh * ratio_h
 
-            # 1. اعتماد
             if score < FACE_CONFIDENCE:
                 continue
-
-            # 2. سایز
             if real_fw < MIN_FACE_SIZE or real_fh < MIN_FACE_SIZE:
                 continue
 
-            # 3. نسبت ابعاد
             ratio = real_fw / real_fh if real_fh > 0 else 0
             if ratio < MIN_FACE_RATIO or ratio > MAX_FACE_RATIO:
                 continue
 
-            # 4. مساحت چهره
             face_area_ratio = (real_fw * real_fh) / img_area
             if face_area_ratio < MIN_FACE_AREA:
                 continue
 
-            # مختصات
             x1 = max(0, int(x * ratio_w))
             y1 = max(0, int(y * ratio_h))
             x2 = min(w, int((x + fw) * ratio_w))
@@ -192,17 +177,14 @@ def has_human_face(img_bgr):
             if face_crop.size == 0:
                 continue
 
-            # 5. وضوح
             try:
                 gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
                 sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
                 if sharpness < MIN_SHARPNESS:
-                    logger.debug(f"❌ blurry ({sharpness:.0f} < {MIN_SHARPNESS})")
                     continue
             except:
                 continue
 
-            # 6. رنگ پوست
             try:
                 hsv = cv2.cvtColor(face_crop, cv2.COLOR_BGR2HSV)
                 ycrcb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2YCrCb)
@@ -223,12 +205,10 @@ def has_human_face(img_bgr):
                 skin_ratio = np.sum(mask > 0) / mask.size
 
                 if skin_ratio < MIN_SKIN_RATIO:
-                    logger.debug(f"❌ no skin ({skin_ratio:.2f} < {MIN_SKIN_RATIO})")
                     continue
             except:
                 continue
 
-            logger.debug(f"✅ face OK (score={score:.2f}, sharp={sharpness:.0f}, skin={skin_ratio:.2f})")
             return True
 
         return False
@@ -425,25 +405,25 @@ def btn(text, data, style=None):
 def main_menu_kb():
     return [
         [
-            btn("مدیریت اکانت‌ها 📁", b"menu_accounts", "primary"),
-            btn("مدیریت قالب‌ها 📝", b"menu_templates", "primary")
+            btn("مدیریت حساب‌های کاربری", b"menu_accounts", "primary"),
+            btn("مدیریت قالب‌های متنی", b"menu_templates", "primary")
         ],
-        [btn("دریافت پروفایل 🔍", b"menu_get_profile", "success")],
+        [btn("دریافت پروفایل و چهره", b"menu_get_profile", "success")],
         [
-            btn("چند شناسه همزمان 📋", b"menu_multi", "primary"),
-            btn("گروه 👥", b"menu_group", "primary")
+            btn("پردازش چندگانه شناسه‌ها", b"menu_multi", "primary"),
+            btn("پردازش گروه", b"menu_group", "primary")
         ]
     ]
 
 
 def back_kb(target=b"menu_main"):
-    return [[btn("بازگشت 🔙", target, "danger")]]
+    return [[btn("بازگشت به منوی اصلی", target, "danger")]]
 
 
 async def main_menu_text(owner_id):
     s = await db_get_settings(owner_id)
-    acc_name = "انتخاب نشده"
-    tmpl_name = "انتخاب نشده"
+    acc_name = "تعیین نشده"
+    tmpl_name = "تعیین نشده"
     if s and s[1]:
         a = await db_get_account(s[1])
         if a:
@@ -453,12 +433,18 @@ async def main_menu_text(owner_id):
         if t:
             tmpl_name = t[2]
     return (
-        "پنل مدیریت خصوصی\n"
-        "━━━━━━━━━━━━━━━━━━\n\n"
-        f"اکانت فعال: {acc_name}\n"
-        f"قالب فعال: {tmpl_name}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "لطفاً از گزینه‌های زیر انتخاب فرمایید:"
+        "🌟 **پنل مدیریت پیشرفته** 🌟\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "به پنل مدیریت خصوصی خوش آمدید.\n"
+        "این پنل به منظور مدیریت حساب‌های کاربری تلگرام و استخراج\n"
+        "چهره‌های انسانی از پروفایل‌های کاربران طراحی شده است.\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "📊 **وضعیت فعلی سیستم**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 حساب فعال: **{acc_name}**\n"
+        f"📝 قالب فعال: **{tmpl_name}**\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        "لطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:"
     )
 
 
@@ -468,26 +454,26 @@ def get_number_keypad_kb(current_code=""):
     return [
         [btn(f"کد وارد شده: {display}", b"code_noop", "primary")],
         [
-            btn("1", b"code_1", "primary"),
-            btn("2", b"code_2", "primary"),
-            btn("3", b"code_3", "primary")
+            btn("۱", b"code_1", "primary"),
+            btn("۲", b"code_2", "primary"),
+            btn("۳", b"code_3", "primary")
         ],
         [
-            btn("4", b"code_4", "primary"),
-            btn("5", b"code_5", "primary"),
-            btn("6", b"code_6", "primary")
+            btn("۴", b"code_4", "primary"),
+            btn("۵", b"code_5", "primary"),
+            btn("۶", b"code_6", "primary")
         ],
         [
-            btn("7", b"code_7", "primary"),
-            btn("8", b"code_8", "primary"),
-            btn("9", b"code_9", "primary")
+            btn("۷", b"code_7", "primary"),
+            btn("۸", b"code_8", "primary"),
+            btn("۹", b"code_9", "primary")
         ],
         [
             btn("⬅️ حذف", b"code_del", "danger"),
-            btn("0", b"code_0", "primary"),
+            btn("۰", b"code_0", "primary"),
             btn("✅ تایید", b"code_submit", "success")
         ],
-        [btn("❌ لغو", b"code_cancel", "danger")]
+        [btn("❌ لغو عملیات", b"code_cancel", "danger")]
     ]
 
 
@@ -617,7 +603,12 @@ async def extract_photos_with_faces(client, target, status_msg=None, max_photos=
 
     if status_msg and total > 0:
         try:
-            await status_msg.edit(f"🔍 بررسی {total} فایل...\nکاربر: {full_name}")
+            await status_msg.edit(
+                f"🔍 **در حال بررسی فایل‌ها**\n\n"
+                f"👤 نام کاربر: **{full_name}**\n"
+                f"📁 تعداد فایل: **{total}**\n\n"
+                f"⏳ لطفاً شکیبا باشید..."
+            )
         except:
             pass
 
@@ -676,8 +667,11 @@ async def extract_photos_with_faces(client, target, status_msg=None, max_photos=
             if status_msg and (idx + 1) % 3 == 0:
                 try:
                     await status_msg.edit(
-                        f"🔍 بررسی... {idx+1}/{total}\n"
-                        f"عکس دارای چهره: {len(all_photos)}"
+                        f"🔍 **در حال بررسی فایل‌ها**\n\n"
+                        f"👤 نام کاربر: **{full_name}**\n"
+                        f"📁 پیشرفت: **{idx+1}/{total}**\n"
+                        f"🖼 چهره‌های یافت شده: **{len(all_photos)}**\n\n"
+                        f"⏳ لطفاً شکیبا باشید..."
                     )
                 except:
                     pass
@@ -724,8 +718,8 @@ async def handle_cancel(event):
     uid = event.sender_id
     user_states.pop(uid, None)
     user_temp.pop(uid, None)
-    await bot.send_message(uid, "لغو شد.", buttons=Button.clear())
-    await event.respond("منوی اصلی:", buttons=back_kb())
+    await bot.send_message(uid, "❌ عملیات لغو شد.", buttons=Button.clear())
+    await event.respond("بازگشت به منوی اصلی:", buttons=back_kb())
 
 
 # ==================== Callback Handler ====================
@@ -745,19 +739,24 @@ async def handle_callback(event):
             if data == "code_cancel":
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
-                await event.edit("❌ لغو شد.", buttons=back_kb())
+                await event.edit("❌ عملیات لغو شد.", buttons=back_kb())
                 return
             if data == "code_del":
                 current = user_temp.get(uid, {}).get('input_code', '')
                 current = current[:-1]
                 user_temp[uid]['input_code'] = current
                 display = current if current else "─────"
-                await event.edit(f"🔐 کد تأیید\n\nکد فعلی: `{display}`", buttons=get_number_keypad_kb(current))
+                await event.edit(
+                    f"🔐 **ورود کد تایید**\n\n"
+                    f"لطفاً کد پنج رقمی را وارد فرمایید.\n\n"
+                    f"کد فعلی: `{display}`",
+                    buttons=get_number_keypad_kb(current)
+                )
                 return
             if data == "code_submit":
                 current = user_temp.get(uid, {}).get('input_code', '')
                 if len(current) < 5:
-                    await event.answer(f"کد باید ۵ رقم باشه", alert=True)
+                    await event.answer(f"کد باید ۵ رقم باشد", alert=True)
                     return
                 await submit_code(event, uid, current)
                 return
@@ -765,34 +764,46 @@ async def handle_callback(event):
                 digit = data[5:]
                 current = user_temp.get(uid, {}).get('input_code', '')
                 if len(current) >= 5:
-                    await event.answer("کد کامل شده", alert=True)
+                    await event.answer("کد کامل شده است", alert=True)
                     return
                 current += digit
                 user_temp[uid]['input_code'] = current
                 display = current if current else "─────"
-                await event.edit(f"🔐 کد تأیید\n\nکد فعلی: `{display}`", buttons=get_number_keypad_kb(current))
+                await event.edit(
+                    f"🔐 **ورود کد تایید**\n\n"
+                    f"لطفاً کد پنج رقمی را وارد فرمایید.\n\n"
+                    f"کد فعلی: `{display}`",
+                    buttons=get_number_keypad_kb(current)
+                )
                 return
 
-        # ═══════ ارسال به کانال ═══════
         if data.startswith("send_channel_"):
             key = data.replace("send_channel_", "")
             payload = pending_channel_sends.get(key)
             if not payload:
-                await event.answer("منقضی شده", alert=True)
+                await event.answer("منقضی شده است", alert=True)
                 return
             await event.answer("در حال ارسال...")
             try:
                 sent = await send_photo_album(bot, CHANNEL_ID, payload['faces'], caption=payload['caption'])
-                await event.edit(f"✅ به کانال ارسال شد ({sent} عکس)", buttons=back_kb())
+                await event.edit(
+                    f"✅ **ارسال به کانال با موفقیت انجام شد**\n\n"
+                    f"📊 تعداد عکس‌های ارسال شده: **{sent}**",
+                    buttons=back_kb()
+                )
             except Exception as e:
-                await event.edit(f"❌ خطا: {str(e)[:100]}", buttons=back_kb())
+                await event.edit(
+                    f"❌ **خطا در ارسال به کانال**\n\n"
+                    f"`{str(e)[:100]}`",
+                    buttons=back_kb()
+                )
             pending_channel_sends.pop(key, None)
             return
 
         if data.startswith("cancel_channel_"):
             key = data.replace("cancel_channel_", "")
             pending_channel_sends.pop(key, None)
-            await event.edit("لغو شد.", buttons=back_kb())
+            await event.edit("❌ ارسال به کانال لغو شد.", buttons=back_kb())
             return
 
         if data == "menu_main":
@@ -806,16 +817,19 @@ async def handle_callback(event):
             user_states[uid] = "WAIT_PHONE"
             user_temp[uid] = {}
             await event.edit(
-                "افزودن اکانت\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
-                "مرحله 1 از 4\n\n"
-                "برای ارسال شماره، از دکمه شیشه‌ای پایین استفاده کن 👇",
+                "➕ **افزودن حساب کاربری جدید**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "**مرحله ۱ از ۴**\n\n"
+                "لطفاً شماره تلفن همراه خود را با کد کشور ارسال فرمایید.\n\n"
+                "**نمونه:** `+989123456789`\n\n"
+                "برای لغو عملیات، دستور /cancel را ارسال فرمایید.",
                 buttons=back_kb(b"menu_accounts")
             )
             await bot.send_message(
                 uid,
-                "📱 شماره‌ت رو با دکمه زیر بفرست:",
-                buttons=Button.request_phone("📱 شماره من", resize=True)
+                "📱 **ارسال شماره تلفن**\n\n"
+                "لطفاً برای ارسال شماره خود، از دکمه شیشه‌ای زیر استفاده فرمایید.",
+                buttons=Button.request_phone("📱 ارسال شماره من", resize=True)
             )
 
         elif data.startswith("acc_view_"):
@@ -841,7 +855,14 @@ async def handle_callback(event):
         elif data == "tmpl_add":
             user_states[uid] = "WAIT_NEW_TEMPLATE"
             user_temp[uid] = {}
-            await event.edit("قالب جدید\n\nعنوان قالب:", buttons=back_kb(b"menu_templates"))
+            await event.edit(
+                "📝 **ایجاد قالب متنی جدید**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً عنوان قالب را ارسال فرمایید.\n\n"
+                "**نمونه:** `چهره‌های زیبا`\n\n"
+                "برای لغو عملیات، دستور /cancel را ارسال فرمایید.",
+                buttons=back_kb(b"menu_templates")
+            )
 
         elif data.startswith("tmpl_view_"):
             tid = int(data.split("_")[2])
@@ -863,33 +884,67 @@ async def handle_callback(event):
         elif data == "menu_get_profile":
             s = await db_get_settings(uid)
             if not s or not s[1]:
-                await event.edit("ابتدا یک اکانت انتخاب فرمایید.", buttons=back_kb())
+                await event.edit(
+                    "⚠️ **حساب کاربری فعالی وجود ندارد.**\n\n"
+                    "لطفاً ابتدا از بخش «مدیریت حساب‌های کاربری»\n"
+                    "یک حساب کاربری انتخاب فرمایید.",
+                    buttons=back_kb()
+                )
                 return
             user_states[uid] = "WAIT_TARGET_INPUT"
             await event.edit(
-                "دریافت پروفایل\n"
-                "━━━━━━━━━━━━━━━━━━\n\n"
-                "شناسه‌ها رو بفرست (چند تا هم بشه):\n\n"
-                "`123456789`\n"
-                "`@username1 @username2`",
+                "🔍 **دریافت پروفایل و چهره**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً شناسه یا شناسه‌های کاربر مورد نظر را ارسال فرمایید.\n\n"
+                "**انواع شناسه:**\n"
+                "• شناسه عددی: `123456789`\n"
+                "• نام کاربری: `@username`\n"
+                "• پیوند: `https://t.me/username`\n\n"
+                "**نکته:** می‌توانید چند شناسه را به صورت همزمان\n"
+                "و در چند خط ارسال فرمایید.\n\n"
+                "**نمونه:**\n"
+                "`@user1 @user2 @user3`",
                 buttons=back_kb()
             )
 
         elif data == "menu_multi":
             s = await db_get_settings(uid)
             if not s or not s[1]:
-                await event.edit("ابتدا یک اکانت انتخاب فرمایید.", buttons=back_kb())
+                await event.edit(
+                    "⚠️ **حساب کاربری فعالی وجود ندارد.**",
+                    buttons=back_kb()
+                )
                 return
             user_states[uid] = "WAIT_MULTI_IDS"
-            await event.edit("چند شناسه\n\nهر خط یکی:", buttons=back_kb())
+            await event.edit(
+                "📋 **پردازش چندگانه شناسه‌ها**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً هر شناسه را در یک خط جداگانه ارسال فرمایید.\n\n"
+                "**نمونه:**\n"
+                "`123456789`\n"
+                "`@username1`\n"
+                "`@username2`",
+                buttons=back_kb()
+            )
 
         elif data == "menu_group":
             s = await db_get_settings(uid)
             if not s or not s[1]:
-                await event.edit("ابتدا یک اکانت انتخاب فرمایید.", buttons=back_kb())
+                await event.edit(
+                    "⚠️ **حساب کاربری فعالی وجود ندارد.**",
+                    buttons=back_kb()
+                )
                 return
             user_states[uid] = "WAIT_GROUP_LINK"
-            await event.edit("گروه\n\nلینک گروه:", buttons=back_kb())
+            await event.edit(
+                "👥 **پردازش گروه**\n"
+                "━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "لطفاً پیوند یا نام کاربری گروه مورد نظر را ارسال فرمایید.\n\n"
+                "**نمونه:**\n"
+                "`https://t.me/groupname`\n"
+                "`@groupname`",
+                buttons=back_kb()
+            )
 
     except Exception as e:
         logger.exception(f"callback error: {e}")
@@ -900,23 +955,32 @@ async def submit_code(event, uid, code):
     phone = user_temp[uid]['phone']
     phone_code_hash = user_temp[uid].get('phone_code_hash')
 
-    await event.edit("⏳ بررسی کد...")
+    await event.edit("⏳ **در حال بررسی کد تایید...**")
 
     try:
         await client.sign_in(phone=phone, code=code, phone_code_hash=phone_code_hash)
         await finalize_account(event, uid, client)
     except SessionPasswordNeededError:
         user_states[uid] = "WAIT_PASSWORD"
-        await event.edit("🔐 رمز دو مرحله‌ای:\n\nرمزت رو بفرست:")
+        await event.edit(
+            "🔐 **رمز عبور دو مرحله‌ای**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "حساب کاربری مورد نظر دارای رمز عبور دو مرحله‌ای است.\n\n"
+            "لطفاً رمز عبور خود را ارسال فرمایید."
+        )
     except PhoneCodeInvalidError:
         user_temp[uid]['input_code'] = ''
-        await event.edit("❌ کد اشتباه.\n\nدوباره:", buttons=get_number_keypad_kb())
+        await event.edit(
+            "❌ **کد وارد شده اشتباه است.**\n\n"
+            "لطفاً مجدداً تلاش فرمایید:",
+            buttons=get_number_keypad_kb()
+        )
     except PhoneCodeExpiredError:
-        await event.edit("⏰ کد منقضی شد. /cancel بزن.")
+        await event.edit("⏰ **کد منقضی شده است.**\n\nلطفاً /cancel را ارسال کرده و مجدداً تلاش فرمایید.")
         user_states.pop(uid, None)
         user_temp.pop(uid, None)
     except Exception as e:
-        await event.edit(f"❌ خطا: {str(e)[:200]}")
+        await event.edit(f"❌ **خطا:** `{str(e)[:200]}`")
         user_states.pop(uid, None)
         user_temp.pop(uid, None)
 
@@ -925,80 +989,122 @@ async def submit_code(event, uid, code):
 async def show_accounts_menu(event, uid):
     accounts = await db_get_accounts(uid)
     if not accounts:
-        text = "هنوز اکانتی نیست."
+        text = (
+            "📁 **مدیریت حساب‌های کاربری**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "هیچ حساب کاربری ثبت نشده است.\n\n"
+            "برای افزودن حساب جدید، از دکمه زیر استفاده فرمایید."
+        )
     else:
-        lines = ["اکانت‌ها:\n"]
+        lines = [
+            "📁 **مدیریت حساب‌های کاربری**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"تعداد حساب‌های ثبت شده: **{len(accounts)}**\n\n"
+        ]
         for i, a in enumerate(accounts, 1):
-            lines.append(f"{i}. {a[6]}\n   `{a[2]}`")
+            lines.append(
+                f"**{i}.** {a[6]}\n"
+                f"     شماره: `{a[2]}`\n"
+            )
         text = "\n".join(lines)
 
     kb = []
     for a in accounts:
-        kb.append([btn(f"{a[6]} | {a[2][-4:]} 📱", f"acc_view_{a[0]}".encode(), "primary")])
-    kb.append([btn("افزودن اکانت ➕", b"acc_add", "success")])
-    kb.append([btn("بازگشت 🔙", b"menu_main", "danger")])
+        kb.append([btn(f"👤 {a[6]} | {a[2][-4:]}", f"acc_view_{a[0]}".encode(), "primary")])
+    kb.append([btn("➕ افزودن حساب کاربری جدید", b"acc_add", "success")])
+    kb.append([btn("🔙 بازگشت به منوی اصلی", b"menu_main", "danger")])
     await event.edit(text, buttons=kb)
 
 
 async def show_account_detail(event, uid, acc_id):
     a = await db_get_account(acc_id)
     if not a:
-        await event.answer("یافت نشد", alert=True)
+        await event.answer("حساب کاربری یافت نشد", alert=True)
         return
     s = await db_get_settings(uid)
     is_current = s and s[1] == acc_id
+
+    status_line = "✅ **این حساب کاربری فعال است.**" if is_current else "❌ **این حساب کاربری فعال نیست.**"
+
     text = (
-        f"اطلاعات اکانت\n\n"
-        f"نام: {a[6]}\n"
-        f"یوزرنیم: `@{a[7] or 'ندارد'}`\n"
-        f"شماره: `{a[2]}`\n\n"
-        f"{'✅ فعال' if is_current else '❌ غیرفعال'}"
+        "ℹ️ **اطلاعات حساب کاربری**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"👤 **نام:** {a[6]}\n"
+        f"🆔 **نام کاربری:** `@{a[7] or 'ندارد'}`\n"
+        f"📱 **شماره تلفن:** `{a[2]}`\n"
+        f"🔑 **شناسه API:** `{a[3]}`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{status_line}"
     )
+
     kb = []
     if not is_current:
-        kb.append([btn("فعال ✅", f"acc_use_{acc_id}".encode(), "success")])
-    kb.append([btn("حذف 🗑", f"acc_del_{acc_id}".encode(), "danger")])
-    kb.append([btn("بازگشت 🔙", b"menu_accounts", "primary")])
+        kb.append([btn("✅ فعال‌سازی این حساب", f"acc_use_{acc_id}".encode(), "success")])
+    kb.append([btn("🗑 حذف حساب کاربری", f"acc_del_{acc_id}".encode(), "danger")])
+    kb.append([btn("🔙 بازگشت به لیست", b"menu_accounts", "primary")])
     await event.edit(text, buttons=kb)
 
 
 async def show_templates_menu(event, uid):
     templates = await db_get_templates(uid)
     if not templates:
-        text = "هنوز قالبی نیست."
+        text = (
+            "📝 **مدیریت قالب‌های متنی**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "هیچ قالبی ثبت نشده است.\n\n"
+            "برای ایجاد قالب جدید، از دکمه زیر استفاده فرمایید."
+        )
     else:
-        lines = ["قالب‌ها:\n"]
+        lines = [
+            "📝 **مدیریت قالب‌های متنی**\n"
+            "━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"تعداد قالب‌ها: **{len(templates)}**\n\n"
+        ]
         for i, t in enumerate(templates, 1):
             preview = t[3][:60].replace('\n', ' ')
-            lines.append(f"{i}. {t[2]}\n   {preview}...")
+            lines.append(f"**{i}.** {t[2]}\n     _{preview}..._\n")
         text = "\n".join(lines)
 
     kb = []
     for t in templates:
-        kb.append([btn(f"{t[2]} 📝", f"tmpl_view_{t[0]}".encode(), "primary")])
-    kb.append([btn("قالب جدید ➕", b"tmpl_add", "success")])
-    kb.append([btn("بازگشت 🔙", b"menu_main", "danger")])
+        kb.append([btn(f"📄 {t[2]}", f"tmpl_view_{t[0]}".encode(), "primary")])
+    kb.append([btn("➕ ایجاد قالب جدید", b"tmpl_add", "success")])
+    kb.append([btn("🔙 بازگشت به منوی اصلی", b"menu_main", "danger")])
     await event.edit(text, buttons=kb)
 
 
 async def show_template_detail(event, uid, tid):
     t = await db_get_template(tid)
     if not t:
-        await event.answer("یافت نشد", alert=True)
+        await event.answer("قالب یافت نشد", alert=True)
         return
     s = await db_get_settings(uid)
     is_current = s and s[2] == tid
+
+    status_line = "✅ **این قالب فعال است.**" if is_current else "❌ **این قالب فعال نیست.**"
+
     text = (
-        f"قالب: {t[2]}\n\n"
-        f"متن:\n`{t[3]}`\n\n"
-        f"متغیرها: `{{name}}` `{{username}}` `{{id}}`\n\n"
-        f"{'✅ فعال' if is_current else '❌ غیرفعال'}"
+        "📄 **اطلاعات قالب متنی**\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"📝 **عنوان:** {t[2]}\n\n"
+        "**متن قالب:**\n"
+        f"`{t[3]}`\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n"
+        "**متغیرهای قابل استفاده:**\n"
+        "• `{name}` — نام کامل\n"
+        "• `{username}` — نام کاربری\n"
+        "• `{id}` — شناسه عددی\n"
+        "• `{first_name}` — نام کوچک\n"
+        "• `{last_name}` — نام خانوادگی\n\n"
+        "━━━━━━━━━━━━━━━━━━━━━\n\n"
+        f"{status_line}"
     )
+
     kb = []
     if not is_current:
-        kb.append([btn("فعال ✅", f"tmpl_use_{tid}".encode(), "success")])
-    kb.append([btn("حذف 🗑", f"tmpl_del_{tid}".encode(), "danger")])
-    kb.append([btn("بازگشت 🔙", b"menu_templates", "primary")])
+        kb.append([btn("✅ فعال‌سازی این قالب", f"tmpl_use_{tid}".encode(), "success")])
+    kb.append([btn("🗑 حذف قالب", f"tmpl_del_{tid}".encode(), "danger")])
+    kb.append([btn("🔙 بازگشت به لیست", b"menu_templates", "primary")])
     await event.edit(text, buttons=kb)
 
 
@@ -1018,7 +1124,12 @@ async def handle_message(event):
         user_temp[uid]['phone'] = phone
         user_states[uid] = "WAIT_API_ID"
         await bot.send_message(uid, "✅", buttons=Button.clear())
-        await event.respond("مرحله 2 از 4\n\nAPI ID:")
+        await event.respond(
+            "✅ **شماره تلفن دریافت شد.**\n\n"
+            "**مرحله ۲ از ۴**\n\n"
+            "لطفاً شناسه API خود را ارسال فرمایید.\n\n"
+            "(این مقدار یک عدد است که از سایت my.telegram.org دریافت می‌شود.)"
+        )
         return
 
     if not event.text:
@@ -1033,24 +1144,35 @@ async def handle_message(event):
     try:
         if state == "WAIT_PHONE":
             if not re.match(r'^\+?[0-9]{10,15}$', text):
-                await event.respond("❌ شماره نامعتبر.\n\nاز دکمه 📱 یا /cancel")
+                await event.respond(
+                    "❌ **شماره تلفن وارد شده نامعتبر است.**\n\n"
+                    "لطفاً از دکمه شیشه‌ای استفاده فرمایید یا /cancel را ارسال کنید."
+                )
                 return
             user_temp[uid]['phone'] = text
             user_states[uid] = "WAIT_API_ID"
             await bot.send_message(uid, "✅", buttons=Button.clear())
-            await event.respond("مرحله 2 از 4\n\nAPI ID:")
+            await event.respond(
+                "✅ **شماره تلفن دریافت شد.**\n\n"
+                "**مرحله ۲ از ۴**\n\n"
+                "لطفاً شناسه API خود را ارسال فرمایید."
+            )
 
         elif state == "WAIT_API_ID":
             if not text.isdigit():
-                await event.respond("❌ API ID باید عدد باشه.")
+                await event.respond("❌ **شناسه API باید یک عدد باشد.**\n\nلطفاً مجدداً ارسال فرمایید.")
                 return
             user_temp[uid]['api_id'] = int(text)
             user_states[uid] = "WAIT_API_HASH"
-            await event.respond("مرحله 3 از 4\n\nAPI Hash:")
+            await event.respond(
+                "✅ **شناسه API دریافت شد.**\n\n"
+                "**مرحله ۳ از ۴**\n\n"
+                "لطفاً هش API خود را ارسال فرمایید."
+            )
 
         elif state == "WAIT_API_HASH":
             if len(text) < 20:
-                await event.respond("❌ API Hash نامعتبر.")
+                await event.respond("❌ **هش API نامعتبر است.**\n\nلطفاً مجدداً ارسال فرمایید.")
                 return
             user_temp[uid]['api_hash'] = text
             user_states[uid] = "WAIT_CODE_BUTTONS"
@@ -1060,7 +1182,7 @@ async def handle_message(event):
             api_id = user_temp[uid]['api_id']
             api_hash = user_temp[uid]['api_hash']
 
-            msg = await event.respond("⏳ ارسال کد...")
+            msg = await event.respond("⏳ **در حال ارسال کد تایید...**")
 
             try:
                 client = TelegramClient(StringSession(), api_id, api_hash)
@@ -1070,21 +1192,22 @@ async def handle_message(event):
                 user_temp[uid]['phone_code_hash'] = sent.phone_code_hash
 
                 await msg.edit(
-                    f"🔐 مرحله 4 از 4\n\n"
-                    f"کد ۵ رقمی به `{phone}` ارسال شد.\n\n"
-                    f"با دکمه‌های زیر وارد کن:",
+                    f"✅ **کد تایید ارسال شد.**\n\n"
+                    f"**مرحله ۴ از ۴**\n\n"
+                    f"کد پنج رقمی به شماره `{phone}` ارسال گردید.\n\n"
+                    f"لطفاً کد را با استفاده از دکمه‌های زیر وارد فرمایید:",
                     buttons=get_number_keypad_kb()
                 )
             except PhoneNumberInvalidError:
-                await msg.edit("❌ شماره نامعتبر.")
+                await msg.edit("❌ **شماره تلفن نامعتبر است.**")
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
             except FloodWaitError as e:
-                await msg.edit(f"⏳ محدودیت: {e.seconds} ثانیه.")
+                await msg.edit(f"⏳ **محدودیت زمانی:** {e.seconds} ثانیه\n\nلطفاً شکیبا باشید.")
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
             except Exception as e:
-                await msg.edit(f"❌ خطا: {str(e)[:200]}")
+                await msg.edit(f"❌ **خطا:** `{str(e)[:200]}`")
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
 
@@ -1095,21 +1218,32 @@ async def handle_message(event):
                 await client.sign_in(password=password)
                 await finalize_account(event, uid, client)
             except Exception as e:
-                await event.respond(f"❌ رمز اشتباه: {str(e)[:200]}")
+                await event.respond(
+                    f"❌ **رمز عبور اشتباه است.**\n\n"
+                    f"`{str(e)[:200]}`"
+                )
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
 
         elif state == "WAIT_NEW_TEMPLATE":
             user_temp[uid]['tmpl_title'] = text
             user_states[uid] = "WAIT_TEMPLATE_TEXT"
-            await event.respond("متن قالب:\n\nمتغیرها: `{name}` `{username}` `{id}`")
+            await event.respond(
+                "📝 **متن قالب را ارسال فرمایید.**\n\n"
+                "**متغیرهای قابل استفاده:**\n"
+                "• `{name}` — نام کامل\n"
+                "• `{username}` — نام کاربری\n"
+                "• `{id}` — شناسه عددی\n"
+                "• `{first_name}` — نام کوچک\n"
+                "• `{last_name}` — نام خانوادگی"
+            )
 
         elif state == "WAIT_TEMPLATE_TEXT":
             title = user_temp[uid].get('tmpl_title', 'بدون عنوان')
             tid = await db_add_template(uid, title, text)
             await db_update_setting(uid, current_template_id=tid)
             await event.respond(
-                f"✅ قالب «{title}» ساخته و فعال شد.",
+                f"✅ **قالب «{title}» با موفقیت ایجاد و فعال شد.**",
                 buttons=back_kb(b"menu_templates")
             )
             user_states.pop(uid, None)
@@ -1125,7 +1259,7 @@ async def handle_message(event):
                         if item:
                             targets.append(item)
             if not targets:
-                await event.respond("❌ چیزی نفرستادی.")
+                await event.respond("❌ **هیچ شناسه‌ای ارسال نشد.**")
                 return
             if len(targets) == 1:
                 asyncio.create_task(process_single_target(event, uid, targets[0]))
@@ -1142,7 +1276,7 @@ async def handle_message(event):
                         if item:
                             targets.append(item)
             if not targets:
-                await event.respond("❌ چیزی نفرستادی.")
+                await event.respond("❌ **هیچ شناسه‌ای ارسال نشد.**")
                 return
             asyncio.create_task(process_multi_targets(event, uid, targets))
 
@@ -1170,15 +1304,15 @@ async def finalize_account(event, uid, client):
         await client.disconnect()
 
         await event.respond(
-            f"✅ اکانت اضافه و فعال شد\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"نام: {acc_name}\n"
-            f"یوزرنیم: `@{username or 'ندارد'}`\n"
-            f"شماره: `{phone}`",
-            buttons=[[btn("مدیریت اکانت‌ها 📁", b"menu_accounts", "success")]]
+            f"✅ **حساب کاربری با موفقیت اضافه و فعال شد.**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **نام:** {acc_name}\n"
+            f"🆔 **نام کاربری:** `@{username or 'ندارد'}`\n"
+            f"📱 **شماره تلفن:** `{phone}`",
+            buttons=[[btn("📁 مدیریت حساب‌های کاربری", b"menu_accounts", "success")]]
         )
     except Exception as e:
-        await event.respond(f"❌ خطا: {str(e)[:200]}")
+        await event.respond(f"❌ **خطا:** `{str(e)[:200]}`")
     user_states.pop(uid, None)
     user_temp.pop(uid, None)
 
@@ -1189,19 +1323,19 @@ async def process_single_target(event, uid, target_raw):
     try:
         s = await db_get_settings(uid)
         if not s or not s[1]:
-            await event.respond("اکانت فعال نداری.")
+            await event.respond("⚠️ **حساب کاربری فعالی وجود ندارد.**")
             return
         a = await db_get_account(s[1])
         _, _, _, api_id, api_hash, session_str, _, _, _, _ = a
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
         if not await client.is_user_authorized():
-            await event.respond("سشن منقضی شده.")
+            await event.respond("⚠️ **نشست منقضی شده است.**\n\nلطفاً مجدداً وارد شوید.")
             return
 
         target = await resolve_entity(client, target_raw)
         if not target:
-            await event.respond(f"❌ کاربر `{target_raw}` پیدا نشد.")
+            await event.respond(f"❌ **کاربر `{target_raw}` یافت نشد.**")
             return
 
         template_text = ""
@@ -1210,7 +1344,7 @@ async def process_single_target(event, uid, target_raw):
             if t:
                 template_text = t[3]
 
-        status = await event.respond("🔍 بررسی...")
+        status = await event.respond("🔍 **در حال بررسی پروفایل...**")
 
         photos, total, full_name, username, user_id_str = await extract_photos_with_faces(
             client, target, status
@@ -1218,13 +1352,15 @@ async def process_single_target(event, uid, target_raw):
 
         if not photos:
             await status.edit(
-                f"❌ هیچ عکس با چهره انسانی از {full_name} پیدا نشد.\n\n"
+                f"❌ **هیچ عکسی با چهره انسانی از {full_name} یافت نشد.**\n\n"
+                f"**دلایل احتمالی:**\n"
                 f"• چهره واضح نیست\n"
-                f"• چهره کوچیکه\n"
-                f"• کیفیت پایینه"
+                f"• چهره بسیار کوچک است\n"
+                f"• کیفیت تصویر پایین است"
             )
             return
 
+        # جایگزینی متغیرها
         footer = template_text
         if footer:
             footer = footer.replace("{name}", full_name)
@@ -1237,40 +1373,41 @@ async def process_single_target(event, uid, target_raw):
             if username:
                 footer += f"\n🆔 @{username}"
 
-        await status.edit(f"📤 ارسال {len(photos)} عکس...")
+        # محدودیت طول کپشن تلگرام
+        if len(footer) > MAX_CAPTION_LENGTH:
+            footer = footer[:MAX_CAPTION_LENGTH - 3] + "..."
+
+        await status.edit(f"📤 **در حال ارسال {len(photos)} عکس...**")
 
         sent_owner = await send_photo_album(bot, uid, photos, caption=footer)
 
         if sent_owner == 0:
-            await status.edit("❌ خطا در ارسال.")
+            await status.edit("❌ **خطا در ارسال عکس‌ها.**")
             return
 
-        # حذف پیام وضعیت
         try:
             await status.delete()
         except:
             pass
 
-        # ═══════ ذخیره برای دکمه کانال ═══════
         import uuid
         send_key = str(uuid.uuid4())[:12]
         pending_channel_sends[send_key] = {'faces': photos, 'caption': footer}
 
-        # پاکسازی قدیمی
         if len(pending_channel_sends) > 50:
             keys = list(pending_channel_sends.keys())[:20]
             for k in keys:
                 pending_channel_sends.pop(k, None)
 
-        # ═══════ پیام جدید برای پرسش کانال ═══════
         await event.respond(
-            f"✅ به پیوی ارسال شد ({sent_owner} عکس)\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 {full_name}\n"
-            f"🆔 `@{username or 'ندارد'}`\n"
-            f"📊 کل فایل: {total}\n"
-            f"🖼 چهره انسانی: {len(photos)}\n\n"
-            f"❓ آیا به کانال ارسال شود؟",
+            f"✅ **عملیات با موفقیت انجام شد.**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"👤 **نام کاربر:** {full_name}\n"
+            f"🆔 **نام کاربری:** `@{username or 'ندارد'}`\n"
+            f"📊 **تعداد کل فایل‌ها:** {total}\n"
+            f"🖼 **چهره‌های انسانی:** {len(photos)}\n\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"❓ **آیا مایل به ارسال عکس‌ها به کانال هستید؟**",
             buttons=[
                 [btn("📡 ارسال به کانال", f"send_channel_{send_key}".encode(), "success")],
                 [btn("❌ لغو", f"cancel_channel_{send_key}".encode(), "danger")]
@@ -1280,7 +1417,7 @@ async def process_single_target(event, uid, target_raw):
     except Exception as e:
         logger.exception(f"process error: {e}")
         try:
-            await event.respond(f"خطا: {str(e)[:200]}")
+            await event.respond(f"❌ **خطا:** `{str(e)[:200]}`")
         except:
             pass
     finally:
@@ -1296,14 +1433,14 @@ async def process_multi_targets(event, uid, targets):
     try:
         s = await db_get_settings(uid)
         if not s or not s[1]:
-            await event.respond("اکانت فعال نداری.")
+            await event.respond("⚠️ **حساب کاربری فعالی وجود ندارد.**")
             return
         a = await db_get_account(s[1])
         _, _, _, api_id, api_hash, session_str, _, _, _, _ = a
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
         if not await client.is_user_authorized():
-            await event.respond("سشن منقضی شده.")
+            await event.respond("⚠️ **نشست منقضی شده است.**")
             return
 
         template_text = ""
@@ -1315,11 +1452,19 @@ async def process_multi_targets(event, uid, targets):
         total = len(targets)
         success = 0
         failed = 0
-        status = await event.respond(f"پردازش {total} شناسه...")
+        status = await event.respond(
+            f"⏳ **در حال پردازش {total} شناسه...**\n\n"
+            f"لطفاً شکیبا باشید."
+        )
 
         for idx, raw in enumerate(targets, 1):
             try:
-                await status.edit(f"پردازش {idx}/{total}\nموفق: {success}")
+                await status.edit(
+                    f"⏳ **در حال پردازش...**\n\n"
+                    f"📊 پیشرفت: **{idx}/{total}**\n"
+                    f"✅ موفق: **{success}**\n"
+                    f"❌ ناموفق: **{failed}**"
+                )
             except:
                 pass
 
@@ -1344,6 +1489,9 @@ async def process_multi_targets(event, uid, targets):
                     footer = footer.replace("{last_name}", target.last_name or "")
                     footer = footer.replace("{id}", user_id_str)
 
+                if len(footer) > MAX_CAPTION_LENGTH:
+                    footer = footer[:MAX_CAPTION_LENGTH - 3] + "..."
+
                 await send_photo_album(bot, uid, photos, caption=footer or None)
 
                 success += 1
@@ -1354,10 +1502,11 @@ async def process_multi_targets(event, uid, targets):
             await asyncio.sleep(1)
 
         await status.edit(
-            f"✅ تکمیل\n"
-            f"کل: {total}\n"
-            f"موفق: {success}\n"
-            f"ناموفق: {failed}",
+            f"✅ **عملیات با موفقیت به پایان رسید.**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📊 **تعداد کل:** {total}\n"
+            f"✅ **موفق:** {success}\n"
+            f"❌ **ناموفق:** {failed}",
             buttons=back_kb()
         )
 
@@ -1376,14 +1525,14 @@ async def process_group(event, uid, link):
     try:
         s = await db_get_settings(uid)
         if not s or not s[1]:
-            await event.respond("اکانت فعال نداری.")
+            await event.respond("⚠️ **حساب کاربری فعالی وجود ندارد.**")
             return
         a = await db_get_account(s[1])
         _, _, _, api_id, api_hash, session_str, _, _, _, _ = a
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
         if not await client.is_user_authorized():
-            await event.respond("سشن منقضی شده.")
+            await event.respond("⚠️ **نشست منقضی شده است.**")
             return
 
         entity = None
@@ -1402,11 +1551,15 @@ async def process_group(event, uid, link):
                     name = name[1:]
                 entity = await client.get_entity(name)
         except Exception as e:
-            await event.respond(f"گروه پیدا نشد.\n{str(e)[:200]}")
+            await event.respond(f"❌ **گروه یافت نشد.**\n\n`{str(e)[:200]}`")
             return
 
         group_title = getattr(entity, 'title', 'بدون نام')
-        status = await event.respond(f"گروه: {group_title}\nدریافت اعضا...")
+        status = await event.respond(
+            f"👥 **در حال بررسی گروه**\n\n"
+            f"📛 نام گروه: **{group_title}**\n"
+            f"⏳ در حال دریافت اعضا..."
+        )
 
         participants = []
         offset = 0
@@ -1428,10 +1581,15 @@ async def process_group(event, uid, link):
 
         total = len(participants)
         if total == 0:
-            await status.edit("عضوی پیدا نشد.")
+            await status.edit("❌ **هیچ عضوی یافت نشد.**")
             return
 
-        await status.edit(f"گروه: {group_title}\nتعداد: {total}\nپردازش...")
+        await status.edit(
+            f"👥 **پردازش گروه**\n\n"
+            f"📛 نام گروه: **{group_title}**\n"
+            f"📊 تعداد اعضا: **{total}**\n\n"
+            f"⏳ در حال پردازش..."
+        )
 
         template_text = ""
         if s[2]:
@@ -1444,7 +1602,12 @@ async def process_group(event, uid, link):
             if user.bot or user.deleted:
                 continue
             try:
-                await status.edit(f"پردازش {idx}/{total}\nموفق: {success}")
+                await status.edit(
+                    f"⏳ **در حال پردازش گروه**\n\n"
+                    f"📛 نام گروه: **{group_title}**\n"
+                    f"📊 پیشرفت: **{idx}/{total}**\n"
+                    f"✅ موفق: **{success}**"
+                )
             except:
                 pass
 
@@ -1463,6 +1626,9 @@ async def process_group(event, uid, link):
                     footer = footer.replace("{last_name}", user.last_name or "")
                     footer = footer.replace("{id}", user_id_str)
 
+                if len(footer) > MAX_CAPTION_LENGTH:
+                    footer = footer[:MAX_CAPTION_LENGTH - 3] + "..."
+
                 await send_photo_album(bot, uid, photos, caption=footer or None)
 
                 success += 1
@@ -1472,10 +1638,11 @@ async def process_group(event, uid, link):
             await asyncio.sleep(1)
 
         await status.edit(
-            f"✅ تکمیل\n"
-            f"گروه: {group_title}\n"
-            f"تعداد: {total}\n"
-            f"پردازش: {success}",
+            f"✅ **عملیات با موفقیت به پایان رسید.**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"📛 **نام گروه:** {group_title}\n"
+            f"📊 **تعداد کل:** {total}\n"
+            f"✅ **پردازش شده:** {success}",
             buttons=back_kb()
         )
 
