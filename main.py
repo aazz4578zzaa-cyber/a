@@ -1,7 +1,6 @@
 """
 ربات دریافت پروفایل
-- تشخیص چهره انسانی سخت‌گیرانه
-- متن‌های رسمی و کتابی
+- تشخیص چهره انسانی واقعی با MediaPipe (رد می‌کنه انیمیشن/نقاشی)
 """
 
 import asyncio
@@ -34,6 +33,15 @@ from telethon.tl.types import (
     InputSingleMedia
 )
 
+# ═══ MediaPipe ═══
+try:
+    import mediapipe as mp
+    MEDIAPIPE_AVAILABLE = True
+except ImportError:
+    MEDIAPIPE_AVAILABLE = False
+    logger_temp = logging.getLogger(__name__)
+    logger_temp.warning("MediaPipe نصب نیست، از YuNet استفاده می‌شه")
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
@@ -57,23 +65,21 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
 
-# ═══════════════ تنظیمات تشخیص چهره ═══════════════
+# ═══════════════ تنظیمات تشخیص ═══════════════
 MAX_PHOTOS_TOTAL = 10
-FACE_CONFIDENCE = 0.7
-MIN_FACE_SIZE = 60
+FACE_CONFIDENCE = 0.6
+MIN_FACE_SIZE = 40
 MAX_FACES_PER_IMAGE = 3
-MIN_FACE_RATIO = 0.6
-MAX_FACE_RATIO = 1.6
-MIN_SHARPNESS = 250
-MIN_SKIN_RATIO = 0.35
-MIN_FACE_AREA = 0.03
+MIN_FACE_RATIO = 0.5
+MAX_FACE_RATIO = 1.8
+MIN_SHARPNESS = 100
+MIN_SKIN_RATIO = 0.20
+MEDIAPIPE_CONFIDENCE = 0.7
 
 # ═══════════════ ویدیو ═══════════════
 VIDEO_MAX_SIZE_MB = 20
 VIDEO_FRAME_SKIP = 30
 VIDEO_MAX_FRAMES = 10
-
-# ═══════════════ محدودیت کپشن تلگرام ═══════════════
 MAX_CAPTION_LENGTH = 1000
 
 
@@ -83,7 +89,56 @@ user_temp = {}
 pending_channel_sends = {}
 
 
-# ==================== YuNet ====================
+# ==================== MediaPipe Setup ====================
+_mp_face_detector = None
+
+
+def init_mediapipe():
+    global _mp_face_detector
+    if not MEDIAPIPE_AVAILABLE:
+        return None
+    if _mp_face_detector is None:
+        try:
+            _mp_face_detector = mp.solutions.face_detection.FaceDetection(
+                model_selection=1,  # 1 = full range (دورتر)
+                min_detection_confidence=MEDIAPIPE_CONFIDENCE
+            )
+            logger.info("✅ MediaPipe آماده شد")
+        except Exception as e:
+            logger.error(f"MediaPipe init error: {e}")
+            return None
+    return _mp_face_detector
+
+
+def has_human_face_mediapipe(img_bgr):
+    """
+    تشخیص چهره انسانی واقعی با MediaPipe
+    این مدل روی چهره‌های واقعی انسان آموزش دیده و انیمیشن رو رد می‌کنه
+    """
+    detector = init_mediapipe()
+    if detector is None:
+        return None  # نمی‌تونیم تشخیص بدیم
+
+    try:
+        rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        results = detector.process(rgb)
+
+        if not results.detections:
+            return False
+
+        # اگه چهره‌ای پیدا شد، چک کن اعتماد بالا باشه
+        for detection in results.detections:
+            score = detection.score[0] if detection.score else 0
+            if score >= MEDIAPIPE_CONFIDENCE:
+                return True
+
+        return False
+    except Exception as e:
+        logger.debug(f"MediaPipe error: {e}")
+        return None
+
+
+# ==================== YuNet (Fallback) ====================
 _yunet = None
 
 
@@ -120,8 +175,8 @@ def init_yunet():
     return _yunet
 
 
-def has_human_face(img_bgr):
-    """تشخیص چهره انسانی با فیلترهای سخت‌گیرانه"""
+def has_human_face_yunet(img_bgr):
+    """Fallback با YuNet"""
     detector = init_yunet()
     if detector is None:
         return False
@@ -161,10 +216,6 @@ def has_human_face(img_bgr):
             if ratio < MIN_FACE_RATIO or ratio > MAX_FACE_RATIO:
                 continue
 
-            face_area_ratio = (real_fw * real_fh) / img_area
-            if face_area_ratio < MIN_FACE_AREA:
-                continue
-
             x1 = max(0, int(x * ratio_w))
             y1 = max(0, int(y * ratio_h))
             x2 = min(w, int((x + fw) * ratio_w))
@@ -193,15 +244,11 @@ def has_human_face(img_bgr):
                 upper_hsv1 = np.array([25, 255, 255], dtype=np.uint8)
                 mask1 = cv2.inRange(hsv, lower_hsv1, upper_hsv1)
 
-                lower_hsv2 = np.array([160, 30, 80], dtype=np.uint8)
-                upper_hsv2 = np.array([180, 255, 255], dtype=np.uint8)
-                mask2 = cv2.inRange(hsv, lower_hsv2, upper_hsv2)
-
                 lower_ycrcb = np.array([0, 135, 85], dtype=np.uint8)
                 upper_ycrcb = np.array([255, 180, 135], dtype=np.uint8)
                 mask3 = cv2.inRange(ycrcb, lower_ycrcb, upper_ycrcb)
 
-                mask = cv2.bitwise_or(cv2.bitwise_or(mask1, mask2), mask3)
+                mask = cv2.bitwise_or(mask1, mask3)
                 skin_ratio = np.sum(mask > 0) / mask.size
 
                 if skin_ratio < MIN_SKIN_RATIO:
@@ -214,8 +261,24 @@ def has_human_face(img_bgr):
         return False
 
     except Exception as e:
-        logger.exception(f"has_human_face error: {e}")
+        logger.exception(f"has_human_face_yunet error: {e}")
         return False
+
+
+def has_human_face(img_bgr):
+    """
+    تشخیص ترکیبی:
+    1. اول MediaPipe (دقیق‌تر برای چهره واقعی)
+    2. اگه MediaPipe نبود، YuNet
+    """
+    # MediaPipe اول
+    if MEDIAPIPE_AVAILABLE:
+        result = has_human_face_mediapipe(img_bgr)
+        if result is not None:
+            return result
+
+    # Fallback به YuNet
+    return has_human_face_yunet(img_bgr)
 
 
 # ==================== دیتابیس ====================
@@ -585,6 +648,10 @@ async def resolve_entity(client, raw):
 
 # ==================== استخراج عکس‌ها ====================
 async def extract_photos_with_faces(client, target, status_msg=None, max_photos=MAX_PHOTOS_TOTAL):
+    import time
+    start_time = time.time()
+    TIMEOUT = 90
+
     target_id = target.id
     first_name = target.first_name or ""
     last_name = target.last_name or ""
@@ -616,6 +683,10 @@ async def extract_photos_with_faces(client, target, status_msg=None, max_photos=
     seen_hashes = set()
 
     for idx, photo in enumerate(photo_list):
+        if time.time() - start_time > TIMEOUT:
+            logger.warning(f"timeout for {full_name}")
+            break
+
         if len(all_photos) >= max_photos:
             break
 
@@ -663,6 +734,7 @@ async def extract_photos_with_faces(client, target, status_msg=None, max_photos=
                     if h not in seen_hashes:
                         seen_hashes.add(h)
                         all_photos.append(original_bytes)
+                        logger.info(f"✅ photo {idx}: face accepted")
 
             if status_msg and (idx + 1) % 3 == 0:
                 try:
@@ -771,7 +843,6 @@ async def handle_callback(event):
                 display = current if current else "─────"
                 await event.edit(
                     f"🔐 **ورود کد تایید**\n\n"
-                    f"لطفاً کد پنج رقمی را وارد فرمایید.\n\n"
                     f"کد فعلی: `{display}`",
                     buttons=get_number_keypad_kb(current)
                 )
@@ -910,10 +981,7 @@ async def handle_callback(event):
         elif data == "menu_multi":
             s = await db_get_settings(uid)
             if not s or not s[1]:
-                await event.edit(
-                    "⚠️ **حساب کاربری فعالی وجود ندارد.**",
-                    buttons=back_kb()
-                )
+                await event.edit("⚠️ **حساب کاربری فعالی وجود ندارد.**", buttons=back_kb())
                 return
             user_states[uid] = "WAIT_MULTI_IDS"
             await event.edit(
@@ -930,10 +998,7 @@ async def handle_callback(event):
         elif data == "menu_group":
             s = await db_get_settings(uid)
             if not s or not s[1]:
-                await event.edit(
-                    "⚠️ **حساب کاربری فعالی وجود ندارد.**",
-                    buttons=back_kb()
-                )
+                await event.edit("⚠️ **حساب کاربری فعالی وجود ندارد.**", buttons=back_kb())
                 return
             user_states[uid] = "WAIT_GROUP_LINK"
             await event.edit(
@@ -1002,10 +1067,7 @@ async def show_accounts_menu(event, uid):
             f"تعداد حساب‌های ثبت شده: **{len(accounts)}**\n\n"
         ]
         for i, a in enumerate(accounts, 1):
-            lines.append(
-                f"**{i}.** {a[6]}\n"
-                f"     شماره: `{a[2]}`\n"
-            )
+            lines.append(f"**{i}.** {a[6]}\n     شماره: `{a[2]}`\n")
         text = "\n".join(lines)
 
     kb = []
@@ -1023,7 +1085,6 @@ async def show_account_detail(event, uid, acc_id):
         return
     s = await db_get_settings(uid)
     is_current = s and s[1] == acc_id
-
     status_line = "✅ **این حساب کاربری فعال است.**" if is_current else "❌ **این حساب کاربری فعال نیست.**"
 
     text = (
@@ -1080,7 +1141,6 @@ async def show_template_detail(event, uid, tid):
         return
     s = await db_get_settings(uid)
     is_current = s and s[2] == tid
-
     status_line = "✅ **این قالب فعال است.**" if is_current else "❌ **این قالب فعال نیست.**"
 
     text = (
@@ -1144,35 +1204,24 @@ async def handle_message(event):
     try:
         if state == "WAIT_PHONE":
             if not re.match(r'^\+?[0-9]{10,15}$', text):
-                await event.respond(
-                    "❌ **شماره تلفن وارد شده نامعتبر است.**\n\n"
-                    "لطفاً از دکمه شیشه‌ای استفاده فرمایید یا /cancel را ارسال کنید."
-                )
+                await event.respond("❌ **شماره تلفن وارد شده نامعتبر است.**")
                 return
             user_temp[uid]['phone'] = text
             user_states[uid] = "WAIT_API_ID"
             await bot.send_message(uid, "✅", buttons=Button.clear())
-            await event.respond(
-                "✅ **شماره تلفن دریافت شد.**\n\n"
-                "**مرحله ۲ از ۴**\n\n"
-                "لطفاً شناسه API خود را ارسال فرمایید."
-            )
+            await event.respond("✅ **شماره دریافت شد.**\n\n**مرحله ۲ از ۴**\n\nشناسه API:")
 
         elif state == "WAIT_API_ID":
             if not text.isdigit():
-                await event.respond("❌ **شناسه API باید یک عدد باشد.**\n\nلطفاً مجدداً ارسال فرمایید.")
+                await event.respond("❌ **شناسه API باید یک عدد باشد.**")
                 return
             user_temp[uid]['api_id'] = int(text)
             user_states[uid] = "WAIT_API_HASH"
-            await event.respond(
-                "✅ **شناسه API دریافت شد.**\n\n"
-                "**مرحله ۳ از ۴**\n\n"
-                "لطفاً هش API خود را ارسال فرمایید."
-            )
+            await event.respond("✅ **شناسه API دریافت شد.**\n\n**مرحله ۳ از ۴**\n\nهش API:")
 
         elif state == "WAIT_API_HASH":
             if len(text) < 20:
-                await event.respond("❌ **هش API نامعتبر است.**\n\nلطفاً مجدداً ارسال فرمایید.")
+                await event.respond("❌ **هش API نامعتبر است.**")
                 return
             user_temp[uid]['api_hash'] = text
             user_states[uid] = "WAIT_CODE_BUTTONS"
@@ -1203,7 +1252,7 @@ async def handle_message(event):
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
             except FloodWaitError as e:
-                await msg.edit(f"⏳ **محدودیت زمانی:** {e.seconds} ثانیه\n\nلطفاً شکیبا باشید.")
+                await msg.edit(f"⏳ **محدودیت:** {e.seconds} ثانیه")
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
             except Exception as e:
@@ -1218,10 +1267,7 @@ async def handle_message(event):
                 await client.sign_in(password=password)
                 await finalize_account(event, uid, client)
             except Exception as e:
-                await event.respond(
-                    f"❌ **رمز عبور اشتباه است.**\n\n"
-                    f"`{str(e)[:200]}`"
-                )
+                await event.respond(f"❌ **رمز عبور اشتباه است.**\n\n`{str(e)[:200]}`")
                 user_states.pop(uid, None)
                 user_temp.pop(uid, None)
 
@@ -1330,7 +1376,7 @@ async def process_single_target(event, uid, target_raw):
         client = TelegramClient(StringSession(session_str), api_id, api_hash)
         await client.connect()
         if not await client.is_user_authorized():
-            await event.respond("⚠️ **نشست منقضی شده است.**\n\nلطفاً مجدداً وارد شوید.")
+            await event.respond("⚠️ **نشست منقضی شده است.**")
             return
 
         target = await resolve_entity(client, target_raw)
@@ -1360,7 +1406,6 @@ async def process_single_target(event, uid, target_raw):
             )
             return
 
-        # جایگزینی متغیرها
         footer = template_text
         if footer:
             footer = footer.replace("{name}", full_name)
@@ -1373,7 +1418,6 @@ async def process_single_target(event, uid, target_raw):
             if username:
                 footer += f"\n🆔 @{username}"
 
-        # محدودیت طول کپشن تلگرام
         if len(footer) > MAX_CAPTION_LENGTH:
             footer = footer[:MAX_CAPTION_LENGTH - 3] + "..."
 
@@ -1382,7 +1426,7 @@ async def process_single_target(event, uid, target_raw):
         sent_owner = await send_photo_album(bot, uid, photos, caption=footer)
 
         if sent_owner == 0:
-            await status.edit("❌ **خطا در ارسال عکس‌ها.**")
+            await status.edit("❌ **خطا در ارسال.**")
             return
 
         try:
@@ -1402,12 +1446,12 @@ async def process_single_target(event, uid, target_raw):
         await event.respond(
             f"✅ **عملیات با موفقیت انجام شد.**\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"👤 **نام کاربر:** {full_name}\n"
+            f"👤 **نام:** {full_name}\n"
             f"🆔 **نام کاربری:** `@{username or 'ندارد'}`\n"
-            f"📊 **تعداد کل فایل‌ها:** {total}\n"
-            f"🖼 **چهره‌های انسانی:** {len(photos)}\n\n"
+            f"📊 **تعداد کل:** {total}\n"
+            f"🖼 **چهره‌ها:** {len(photos)}\n\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"❓ **آیا مایل به ارسال عکس‌ها به کانال هستید؟**",
+            f"❓ **آیا مایل به ارسال به کانال هستید؟**",
             buttons=[
                 [btn("📡 ارسال به کانال", f"send_channel_{send_key}".encode(), "success")],
                 [btn("❌ لغو", f"cancel_channel_{send_key}".encode(), "danger")]
@@ -1474,11 +1518,13 @@ async def process_multi_targets(event, uid, targets):
                 continue
 
             try:
-                photos, cnt, full_name, username, user_id_str = await extract_photos_with_faces(
-                    client, target, None
+                photos, cnt, full_name, username, user_id_str = await asyncio.wait_for(
+                    extract_photos_with_faces(client, target, None),
+                    timeout=120
                 )
                 if not photos:
                     failed += 1
+                    logger.info(f"❌ {raw}: no photos with face")
                     continue
 
                 footer = template_text
@@ -1495,8 +1541,11 @@ async def process_multi_targets(event, uid, targets):
                 await send_photo_album(bot, uid, photos, caption=footer or None)
 
                 success += 1
+            except asyncio.TimeoutError:
+                logger.warning(f"⏰ timeout for {raw}")
+                failed += 1
             except Exception as e:
-                logger.warning(f"multi target error: {e}")
+                logger.exception(f"❌ {raw}: {e}")
                 failed += 1
 
             await asyncio.sleep(1)
@@ -1551,15 +1600,11 @@ async def process_group(event, uid, link):
                     name = name[1:]
                 entity = await client.get_entity(name)
         except Exception as e:
-            await event.respond(f"❌ **گروه یافت نشد.**\n\n`{str(e)[:200]}`")
+            await event.respond(f"❌ **گروه یافت نشد.**")
             return
 
         group_title = getattr(entity, 'title', 'بدون نام')
-        status = await event.respond(
-            f"👥 **در حال بررسی گروه**\n\n"
-            f"📛 نام گروه: **{group_title}**\n"
-            f"⏳ در حال دریافت اعضا..."
-        )
+        status = await event.respond(f"👥 **در حال بررسی گروه**\n\n📛 **{group_title}**\n⏳ دریافت اعضا...")
 
         participants = []
         offset = 0
@@ -1584,12 +1629,7 @@ async def process_group(event, uid, link):
             await status.edit("❌ **هیچ عضوی یافت نشد.**")
             return
 
-        await status.edit(
-            f"👥 **پردازش گروه**\n\n"
-            f"📛 نام گروه: **{group_title}**\n"
-            f"📊 تعداد اعضا: **{total}**\n\n"
-            f"⏳ در حال پردازش..."
-        )
+        await status.edit(f"👥 **پردازش گروه**\n\n📛 **{group_title}**\n📊 **{total}** عضو\n⏳ پردازش...")
 
         template_text = ""
         if s[2]:
@@ -1603,10 +1643,10 @@ async def process_group(event, uid, link):
                 continue
             try:
                 await status.edit(
-                    f"⏳ **در حال پردازش گروه**\n\n"
-                    f"📛 نام گروه: **{group_title}**\n"
-                    f"📊 پیشرفت: **{idx}/{total}**\n"
-                    f"✅ موفق: **{success}**"
+                    f"⏳ **پردازش گروه**\n\n"
+                    f"📛 **{group_title}**\n"
+                    f"📊 **{idx}/{total}**\n"
+                    f"✅ **{success}**"
                 )
             except:
                 pass
@@ -1638,10 +1678,10 @@ async def process_group(event, uid, link):
             await asyncio.sleep(1)
 
         await status.edit(
-            f"✅ **عملیات با موفقیت به پایان رسید.**\n"
+            f"✅ **عملیات به پایان رسید.**\n"
             f"━━━━━━━━━━━━━━━━━━━━━\n\n"
-            f"📛 **نام گروه:** {group_title}\n"
-            f"📊 **تعداد کل:** {total}\n"
+            f"📛 **{group_title}**\n"
+            f"📊 **کل:** {total}\n"
             f"✅ **پردازش شده:** {success}",
             buttons=back_kb()
         )
@@ -1660,10 +1700,12 @@ async def process_group(event, uid, link):
 async def main():
     await init_db()
     init_yunet()
+    init_mediapipe()
 
     logger.info(f"مالکان: {ADMIN_IDS}")
     logger.info(f"کانال: {CHANNEL_ID}")
-    logger.info(f"تنظیمات تشخیص: confidence={FACE_CONFIDENCE}, size={MIN_FACE_SIZE}, "
+    logger.info(f"MediaPipe: {'✅ فعال' if MEDIAPIPE_AVAILABLE else '❌ غیرفعال'}")
+    logger.info(f"تنظیمات: confidence={FACE_CONFIDENCE}, size={MIN_FACE_SIZE}, "
                 f"sharpness={MIN_SHARPNESS}, skin={MIN_SKIN_RATIO}")
 
     max_retries = 10
