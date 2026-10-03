@@ -1,6 +1,6 @@
 """
 ربات دریافت پروفایل + جداسازی چهره
-نسخه اصلاح‌شده — سریع، دقیق، با لاگ کامل
+نسخه نهایی — سریع، دقیق، با دکمه تایید کانال
 """
 
 import asyncio
@@ -58,19 +58,23 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
 
-# ==================== تنظیمات تشخیص (اصلاح‌شده) ====================
-ALBUM_CHUNK_SIZE = 10        # حداکثر عکس در هر آلبوم تلگرام
-FACE_CONFIDENCE = 0.7        # بالاتر = دقیق‌تر (قبلاً 0.5 بود)
-MIN_FACE_SIZE = 60           # بزرگ‌تر = دقیق‌تر (قبلاً 30 بود)
+# ==================== تنظیمات تشخیص (بهبودیافته) ====================
+MAX_FACES_TOTAL = 5          # حداکثر چهره در کل (نه هر عکس)
+FACE_CONFIDENCE = 0.75       # اعتماد بالا
+MIN_FACE_SIZE = 70           # چهره باید بزرگ باشه
 MARGIN_RATIO = 0.3
-MAX_FACES_PER_IMAGE = 5      # حداکثر چهره در هر عکس (جلوگیری از false positive)
+MAX_FACES_PER_IMAGE = 2      # حداکثر 2 چهره در هر عکس
 VIDEO_MAX_SIZE_MB = 20
-VIDEO_FRAME_SKIP = 30        # هر 30 فریم یکی (سریع‌تر)
+VIDEO_FRAME_SKIP = 30
+MIN_FACE_RATIO = 0.5         # نسبت عرض به ارتفاع
+MAX_FACE_RATIO = 1.8
+MIN_SHARPNESS = 50.0         # وضوح چهره (Laplacian variance)
 
 
 # ==================== State ====================
 user_states = {}
 user_temp = {}
+pending_channel_sends = {}  # برای دکمه‌های «ارسال به کانال»
 
 
 # ==================== YuNet Face Detector ====================
@@ -111,13 +115,21 @@ def init_yunet():
     return _yunet
 
 
+def is_sharp_face(face_img):
+    """چک کن چهره واضح باشه (نه تار/انیمیشن)"""
+    try:
+        if len(face_img.shape) == 3:
+            gray = cv2.cvtColor(face_img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = face_img
+        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+        return laplacian_var > MIN_SHARPNESS
+    except:
+        return True
+
+
 def crop_faces_only(img_bgr):
-    """
-    تشخیص چهره‌ها و کراپ
-    - فقط چهره‌های با اعتماد بالا
-    - حداکثر MAX_FACES_PER_IMAGE چهره در هر عکس
-    - حذف چهره‌های خیلی کوچک
-    """
+    """تشخیص چهره‌ها با فیلترهای دقیق"""
     detector = init_yunet()
     if detector is None:
         return []
@@ -130,8 +142,12 @@ def crop_faces_only(img_bgr):
         if faces is None or len(faces) == 0:
             return []
 
-        # مرتب‌سازی بر اساس اعتماد (بالاترین اول)
-        faces_sorted = sorted(faces, key=lambda f: f[-1], reverse=True)
+        # مرتب‌سازی بر اساس اعتماد + سایز
+        faces_sorted = sorted(
+            faces,
+            key=lambda f: f[-1] * (f[2] * f[3]),
+            reverse=True
+        )
 
         cropped = []
         for face in faces_sorted[:MAX_FACES_PER_IMAGE]:
@@ -143,9 +159,9 @@ def crop_faces_only(img_bgr):
             if fw < MIN_FACE_SIZE or fh < MIN_FACE_SIZE:
                 continue
 
-            # نسبت ابعاد چهره باید منطقی باشه
+            # نسبت ابعاد چهره
             ratio = fw / fh if fh > 0 else 0
-            if ratio < 0.5 or ratio > 1.8:
+            if ratio < MIN_FACE_RATIO or ratio > MAX_FACE_RATIO:
                 continue
 
             mx = int(fw * MARGIN_RATIO)
@@ -160,9 +176,13 @@ def crop_faces_only(img_bgr):
             if crop.size == 0:
                 continue
 
-            # چک کن چهره خیلی کوچک نباشه
-            if crop.shape[0] < MIN_FACE_SIZE or crop.shape[1] < MIN_FACE_SIZE:
+            # چک وضوح (فیلتر انیمیشن/کارتون)
+            if not is_sharp_face(crop):
+                logger.info(f"face rejected: blurry (sharpness check failed)")
                 continue
+
+            # resize به سایز استاندارد
+            crop = cv2.resize(crop, (200, 200))
 
             ok, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 92])
             if ok:
@@ -418,8 +438,7 @@ async def main_menu_text(owner_id):
         "پنل مدیریت خصوصی\n"
         "━━━━━━━━━━━━━━━━━━\n\n"
         f"اکانت فعال: {acc_name}\n"
-        f"قالب فعال: {tmpl_name}\n"
-        f"کانال مقصد: ثابت\n\n"
+        f"قالب فعال: {tmpl_name}\n\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "لطفاً از گزینه‌های زیر انتخاب فرمایید:"
     )
@@ -429,100 +448,80 @@ async def main_menu_text(owner_id):
 bot = TelegramClient(StringSession(), BOT_API_ID, BOT_API_HASH)
 
 
-# ==================== ارسال آلبومی Photo (اصلاح‌شده) ====================
+# ==================== ارسال آلبومی (ساده) ====================
 async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
     """
     ارسال عکس‌ها به صورت آلبوم Photo
-    - تکه‌تکه به آلبوم‌های 10 تایی
-    - آپلود موازی برای سرعت
-    - اگه آلبوم fail شد، تک تک می‌فرسته
-    - لاگ کامل
+    حداکثر 10 عکس در یه آلبوم
     """
     if not photo_bytes_list:
         return 0
 
-    total_sent = 0
-    total_count = len(photo_bytes_list)
+    # محدود به 10 عکس (تلگرام بیشتر قبول نمی‌کنه)
+    photo_bytes_list = photo_bytes_list[:10]
 
-    logger.info(f"شروع ارسال {total_count} عکس به {chat_id}")
-
-    for i in range(0, total_count, ALBUM_CHUNK_SIZE):
-        chunk = photo_bytes_list[i:i + ALBUM_CHUNK_SIZE]
-
-        # ═══════ آپلود موازی برای سرعت ═══════
+    try:
+        # آپلود موازی
         async def upload_one(idx, data):
             try:
                 return await client.upload_file(
                     BytesIO(data),
-                    file_name=f"photo_{i + idx}.jpg"
+                    file_name=f"face_{idx}.jpg"
                 )
             except Exception as e:
-                logger.warning(f"upload error for {i+idx}: {e}")
+                logger.warning(f"upload error {idx}: {e}")
                 return None
 
         uploads = await asyncio.gather(
-            *[upload_one(idx, data) for idx, data in enumerate(chunk)],
+            *[upload_one(idx, data) for idx, data in enumerate(photo_bytes_list)],
             return_exceptions=False
         )
-
         uploaded = [u for u in uploads if u is not None]
 
         if not uploaded:
-            logger.warning(f"no uploaded files in chunk {i}")
-            continue
+            return 0
 
-        # ═══════ تعیین کپشن ═══════
-        cap = caption if (i == 0) else None
+        if len(uploaded) == 1:
+            await client.send_file(
+                chat_id, uploaded[0],
+                caption=caption,
+                force_document=False
+            )
+            return 1
 
-        # ═══════ ارسال ═══════
-        try:
-            if len(uploaded) == 1:
-                # فقط یدونه
+        # آلبوم
+        media_list = []
+        for idx, f in enumerate(uploaded):
+            media = InputMediaPhoto(
+                file=f,
+                caption=caption if idx == 0 else None,
+            )
+            media_list.append(InputSingleMedia(media=media))
+
+        await client(SendMultiMediaRequest(
+            peer=chat_id,
+            multi_media=media_list
+        ))
+
+        return len(uploaded)
+
+    except Exception as e:
+        logger.exception(f"album send error: {e}")
+        # fallback: تک تک
+        sent = 0
+        for idx, data in enumerate(photo_bytes_list):
+            try:
                 await client.send_file(
-                    chat_id, uploaded[0],
-                    caption=cap,
+                    chat_id,
+                    BytesIO(data),
+                    caption=caption if idx == 0 else None,
                     force_document=False
                 )
-                total_sent += 1
-                logger.info(f"sent single photo {i}")
-            else:
-                # آلبوم
-                media_list = []
-                for idx, f in enumerate(uploaded):
-                    media = InputMediaPhoto(
-                        file=f,
-                        caption=cap if idx == 0 else None,
-                    )
-                    media_list.append(InputSingleMedia(media=media))
-
-                await client(SendMultiMediaRequest(
-                    peer=chat_id,
-                    multi_media=media_list
-                ))
-                total_sent += len(uploaded)
-                logger.info(f"sent album chunk {i} with {len(uploaded)} photos")
-
-        except Exception as e:
-            logger.exception(f"album send failed for chunk {i}: {e}")
-            # ═══════ fallback: تک تک ارسال کن ═══════
-            for idx, f in enumerate(uploaded):
-                try:
-                    c = cap if idx == 0 else None
-                    await client.send_file(
-                        chat_id, f,
-                        caption=c,
-                        force_document=False
-                    )
-                    total_sent += 1
-                    logger.info(f"sent single (fallback) {i}.{idx}")
-                except Exception as e2:
-                    logger.warning(f"single send failed {i}.{idx}: {e2}")
-
-        # ═══════ تأخیر خیلی کوتاه (نه 1 ثانیه) ═══════
-        await asyncio.sleep(0.3)
-
-    logger.info(f"ارسال تکمیل شد: {total_sent}/{total_count}")
-    return total_sent
+                sent += 1
+                await asyncio.sleep(0.5)
+            except Exception as e2:
+                logger.warning(f"fallback send error: {e2}")
+        return sent
 
 
 # ==================== Resolve Entity ====================
@@ -562,12 +561,13 @@ async def resolve_entity(client, raw):
     return None
 
 
-# ==================== استخراج چهره‌ها (اصلاح‌شده) ====================
-async def extract_faces_from_profile(client, target, status_msg=None):
+# ==================== استخراج چهره‌ها (سرعت بالا) ====================
+async def extract_faces_from_profile(client, target, status_msg=None, max_faces=MAX_FACES_TOTAL):
     """
-    گرفتن پروفایل‌های کاربر (عکس + ویدیو)، جداسازی چهره‌ها
-    - دانلود موازی برای سرعت
-    - لاگ کامل
+    استخراج چهره‌های انسانی واضح از پروفایل
+    - حداکثر max_faces چهره
+    - فقط چهره‌های واضح
+    - توقف به محض رسیدن به سقف
     """
     target_id = target.id
     first_name = target.first_name or ""
@@ -586,92 +586,93 @@ async def extract_faces_from_profile(client, target, status_msg=None):
         photo_list = []
 
     total = len(photo_list)
-    all_faces = []
-
-    logger.info(f"extract: user={full_name} total_files={total}")
 
     if status_msg and total > 0:
         try:
             await status_msg.edit(
                 f"🔍 در حال بررسی {total} فایل...\n"
-                f"کاربر: {full_name}"
+                f"کاربر: {full_name}\n"
+                f"هدف: حداکثر {max_faces} چهره"
             )
         except:
             pass
 
-    # ═══════ دسته‌بندی: عکس یا ویدیو ═══════
-    image_items = []
-    video_items = []
+    all_faces = []
+    seen_hashes = set()
 
     for idx, photo in enumerate(photo_list):
-        is_video = hasattr(photo, 'video_sizes') and photo.video_sizes
-        if is_video:
-            file_size = getattr(photo, 'size', 0) or 0
-            if file_size <= VIDEO_MAX_SIZE_MB * 1024 * 1024:
-                video_items.append((idx, photo))
-        else:
-            image_items.append((idx, photo))
+        # اگه به سقف رسیدیم، توقف
+        if len(all_faces) >= max_faces:
+            logger.info(f"reached max_faces ({max_faces}), stopping")
+            break
 
-    logger.info(f"images={len(image_items)}, videos={len(video_items)}")
-
-    # ═══════ پردازش عکس‌ها (سریع) ═══════
-    for idx, photo in image_items:
         try:
-            buf = BytesIO()
-            await client.download_media(photo, buf)
-            buf.seek(0)
-            arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is not None:
-                faces = crop_faces_only(img)
-                all_faces.extend(faces)
-                if faces:
-                    logger.info(f"image {idx}: {len(faces)} faces")
-        except Exception as e:
-            logger.warning(f"image {idx} error: {e}")
+            is_video = hasattr(photo, 'video_sizes') and photo.video_sizes
 
-        if status_msg and (idx + 1) % 3 == 0:
-            try:
-                await status_msg.edit(
-                    f"🔍 بررسی عکس‌ها... {idx+1}/{total}\n"
-                    f"چهره‌ها: {len(all_faces)}"
-                )
-            except:
-                pass
+            if is_video:
+                file_size = getattr(photo, 'size', 0) or 0
+                if file_size > VIDEO_MAX_SIZE_MB * 1024 * 1024:
+                    continue
 
-    # ═══════ پردازش ویدیوها ═══════
-    for idx, photo in video_items:
-        try:
-            with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
-                tmp_path = tmp.name
+                with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
+                    tmp_path = tmp.name
 
-            try:
-                await client.download_media(photo, tmp_path)
-                frames = extract_frames_from_video(tmp_path, skip=VIDEO_FRAME_SKIP)
-
-                for frame in frames:
-                    faces = crop_faces_only(frame)
-                    all_faces.extend(faces)
-
-                logger.info(f"video {idx}: {len(frames)} frames processed")
-            finally:
                 try:
-                    os.remove(tmp_path)
+                    await client.download_media(photo, tmp_path)
+                    frames = extract_frames_from_video(tmp_path, skip=VIDEO_FRAME_SKIP)
+
+                    for frame in frames:
+                        if len(all_faces) >= max_faces:
+                            break
+                        faces = crop_faces_only(frame)
+                        for f in faces:
+                            if len(all_faces) >= max_faces:
+                                break
+                            h = hash(f[:100])
+                            if h not in seen_hashes:
+                                seen_hashes.add(h)
+                                all_faces.append(f)
+                finally:
+                    try:
+                        os.remove(tmp_path)
+                    except:
+                        pass
+            else:
+                buf = BytesIO()
+                await client.download_media(photo, buf)
+                buf.seek(0)
+                arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
+                img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img is not None:
+                    faces = crop_faces_only(img)
+                    for f in faces:
+                        if len(all_faces) >= max_faces:
+                            break
+                        h = hash(f[:100])
+                        if h not in seen_hashes:
+                            seen_hashes.add(h)
+                            all_faces.append(f)
+
+            # بروزرسانی وضعیت
+            if status_msg and (idx + 1) % 5 == 0:
+                try:
+                    await status_msg.edit(
+                        f"🔍 بررسی... {idx+1}/{total}\n"
+                        f"چهره‌های واجد شرایط: {len(all_faces)}/{max_faces}"
+                    )
                 except:
                     pass
+
         except Exception as e:
-            logger.warning(f"video {idx} error: {e}")
+            logger.warning(f"file {idx} error: {e}")
+            continue
 
-    # ═══════ حذف تکراری‌ها (بهبود یافته) ═══════
-    unique_faces = deduplicate_faces(all_faces)
+    logger.info(f"extract done: {len(all_faces)} faces from {total} files")
 
-    logger.info(f"extract done: {len(all_faces)} raw -> {len(unique_faces)} unique")
-
-    return unique_faces, total, full_name, username, user_id_str
+    return all_faces, total, full_name, username, user_id_str
 
 
 def extract_frames_from_video(video_path, skip=30):
-    """استخراج فریم‌ها از ویدیو"""
     frames = []
     try:
         cap = cv2.VideoCapture(video_path)
@@ -679,7 +680,7 @@ def extract_frames_from_video(video_path, skip=30):
             return []
 
         count = 0
-        max_frames = 20  # کاهش از 30 به 20
+        max_frames = 10  # کم‌تر برای سرعت
 
         while len(frames) < max_frames:
             ret, frame = cap.read()
@@ -687,68 +688,17 @@ def extract_frames_from_video(video_path, skip=30):
                 break
 
             if count % skip == 0:
-                # کوچیک کن برای سرعت
                 h, w = frame.shape[:2]
                 if w > 640:
                     scale = 640 / w
                     frame = cv2.resize(frame, (640, int(h * scale)))
-
                 frames.append(frame)
-
             count += 1
 
         cap.release()
         return frames
-    except Exception as e:
-        logger.warning(f"extract_frames error: {e}")
+    except:
         return []
-
-
-def deduplicate_faces(faces):
-    """
-    حذف چهره‌های تکراری با perceptual hash
-    خیلی بهتر از hash ساده بایتی
-    """
-    if not faces:
-        return []
-
-    unique = []
-    hashes = []
-
-    for face_bytes in faces:
-        try:
-            # decode
-            arr = np.frombuffer(face_bytes, dtype=np.uint8)
-            img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-            if img is None:
-                continue
-
-            # resize به 8x8
-            small = cv2.resize(img, (8, 8))
-            gray = cv2.cvtColor(small, cv2.COLOR_BGR2GRAY)
-
-            # hash: مقایسه با میانگین
-            avg = gray.mean()
-            phash = ''.join('1' if p > avg else '0' for p in gray.flatten())
-
-            # چک کن با hashهای قبلی
-            is_duplicate = False
-            for h in hashes:
-                # فاصله همینگ
-                diff = sum(1 for a, b in zip(phash, h) if a != b)
-                if diff <= 5:  # اگه کمتر از 5 بیت فرق داشت، تکراری
-                    is_duplicate = True
-                    break
-
-            if not is_duplicate:
-                hashes.append(phash)
-                unique.append(face_bytes)
-
-        except Exception as e:
-            logger.warning(f"dedup error: {e}")
-            continue
-
-    return unique
 
 
 # ==================== /start ====================
@@ -780,6 +730,44 @@ async def handle_callback(event):
     uid = event.sender_id
 
     try:
+        # ═══════ دکمه «ارسال به کانال» ═══════
+        if data.startswith("send_channel_"):
+            key = data.replace("send_channel_", "")
+            payload = pending_channel_sends.get(key)
+
+            if not payload:
+                await event.answer("منقضی شده", alert=True)
+                return
+
+            faces = payload['faces']
+            caption = payload['caption']
+
+            await event.answer("در حال ارسال به کانال...")
+
+            try:
+                sent = await send_photo_album(bot, CHANNEL_ID, faces, caption=caption or None)
+                await event.edit(
+                    f"✅ به کانال ارسال شد ({sent} عکس)",
+                    buttons=back_kb()
+                )
+            except Exception as e:
+                logger.exception(f"channel send error: {e}")
+                await event.edit(
+                    f"❌ خطا در ارسال به کانال: {str(e)[:100]}",
+                    buttons=back_kb()
+                )
+
+            pending_channel_sends.pop(key, None)
+            return
+
+        # ═══════ دکمه «لغو» ═══════
+        if data.startswith("cancel_channel_"):
+            key = data.replace("cancel_channel_", "")
+            pending_channel_sends.pop(key, None)
+            await event.edit("لغو شد.", buttons=back_kb())
+            return
+
+        # ═══════ منوی اصلی ═══════
         if data == "menu_main":
             text = await main_menu_text(uid)
             await event.edit(text, buttons=main_menu_kb())
@@ -860,7 +848,7 @@ async def handle_callback(event):
                 "• شناسه عددی: `123456789`\n"
                 "• نام کاربری: `@username`\n"
                 "• لینک: `https://t.me/username`\n\n"
-                "⚠️ فقط چهره‌ها استخراج و به صورت آلبوم ارسال می‌شن.",
+                f"⚠️ حداکثر {MAX_FACES_TOTAL} چهره واضح استخراج می‌شه.",
                 buttons=back_kb()
             )
 
@@ -903,18 +891,12 @@ async def handle_callback(event):
 # ==================== نمایش اکانت‌ها ====================
 async def show_accounts_menu(event, uid):
     accounts = await db_get_accounts(uid)
-
     if not accounts:
         text = "هنوز اکانتی اضافه نشده است."
     else:
         lines = ["اکانت‌های فعال:\n"]
         for i, a in enumerate(accounts, 1):
-            lines.append(
-                f"{i}. {a[6]}\n"
-                f"   شماره: `{a[2]}`\n"
-                f"   یوزرنیم: `@{a[7] or 'ندارد'}`\n"
-                f"   شناسه: `{a[0]}`"
-            )
+            lines.append(f"{i}. {a[6]}\n   شماره: `{a[2]}`\n   یوزرنیم: `@{a[7] or 'ندارد'}`")
         text = "\n".join(lines)
 
     kb = []
@@ -922,7 +904,6 @@ async def show_accounts_menu(event, uid):
         kb.append([btn(f"{a[6]} | {a[2][-4:]} 📱", f"acc_view_{a[0]}".encode(), "primary")])
     kb.append([btn("افزودن اکانت جدید ➕", b"acc_add", "success")])
     kb.append([btn("بازگشت 🔙", b"menu_main", "danger")])
-
     await event.edit(text, buttons=kb)
 
 
@@ -940,10 +921,8 @@ async def show_account_detail(event, uid, acc_id):
         f"نام: {a[6]}\n"
         f"یوزرنیم: `@{a[7] or 'ندارد'}`\n"
         f"شماره: `{a[2]}`\n"
-        f"API ID: `{a[3]}`\n"
-        f"تاریخ افزودن: {a[8][:10]}\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"{'این اکانت فعال است.' if is_current else 'این اکانت فعال نیست.'}"
+        f"API ID: `{a[3]}`\n\n"
+        f"{'✅ این اکانت فعال است.' if is_current else '❌ فعال نیست.'}"
     )
 
     kb = []
@@ -951,13 +930,11 @@ async def show_account_detail(event, uid, acc_id):
         kb.append([btn("انتخاب به عنوان فعال ✅", f"acc_use_{acc_id}".encode(), "success")])
     kb.append([btn("حذف اکانت 🗑", f"acc_del_{acc_id}".encode(), "danger")])
     kb.append([btn("بازگشت 🔙", b"menu_accounts", "primary")])
-
     await event.edit(text, buttons=kb)
 
 
 async def show_templates_menu(event, uid):
     templates = await db_get_templates(uid)
-
     if not templates:
         text = "هنوز قالبی ساخته نشده است."
     else:
@@ -972,7 +949,6 @@ async def show_templates_menu(event, uid):
         kb.append([btn(f"{t[2]} 📝", f"tmpl_view_{t[0]}".encode(), "primary")])
     kb.append([btn("قالب جدید ➕", b"tmpl_add", "success")])
     kb.append([btn("بازگشت 🔙", b"menu_main", "danger")])
-
     await event.edit(text, buttons=kb)
 
 
@@ -989,9 +965,8 @@ async def show_template_detail(event, uid, tid):
         "اطلاعات قالب\n━━━━━━━━━━━━━━━━━━\n\n"
         f"عنوان: {t[2]}\n\n"
         f"متن:\n`{t[3]}`\n\n"
-        "━━━━━━━━━━━━━━━━━━\n"
         "متغیرها: `{name}` `{username}` `{id}`\n\n"
-        f"{'این قالب فعال است.' if is_current else 'این قالب فعال نیست.'}"
+        f"{'✅ این قالب فعال است.' if is_current else '❌ فعال نیست.'}"
     )
 
     kb = []
@@ -999,7 +974,6 @@ async def show_template_detail(event, uid, tid):
         kb.append([btn("انتخاب به عنوان فعال ✅", f"tmpl_use_{tid}".encode(), "success")])
     kb.append([btn("حذف قالب 🗑", f"tmpl_del_{tid}".encode(), "danger")])
     kb.append([btn("بازگشت 🔙", b"menu_templates", "primary")])
-
     await event.edit(text, buttons=kb)
 
 
@@ -1053,10 +1027,7 @@ async def handle_message(event):
                 sent = await client.send_code_request(phone)
                 user_temp[uid]['client'] = client
                 user_temp[uid]['phone_code_hash'] = sent.phone_code_hash
-                await msg.edit(
-                    f"مرحله 4 از 5\n\nکد تأیید به `{phone}` ارسال شد.\n\n"
-                    "کد رو بفرست: `1.2.3.4.5` یا `12345`"
-                )
+                await msg.edit(f"مرحله 4 از 5\n\nکد به `{phone}` ارسال شد:\n`1.2.3.4.5` یا `12345`")
             except Exception as e:
                 await msg.edit(f"خطا: {str(e)[:200]}")
                 user_states.pop(uid, None)
@@ -1098,20 +1069,16 @@ async def handle_message(event):
             user_temp[uid]['tmpl_title'] = text
             user_states[uid] = "WAIT_TEMPLATE_TEXT"
             await event.respond(
-                "متن قالب رو بفرست:\n\n"
+                "متن قالب:\n\n"
                 "متغیرها:\n"
-                "`{name}` — نام کامل\n"
-                "`{username}` — یوزرنیم با @\n"
-                "`{id}` — شناسه عددی\n"
-                "`{first_name}` — نام کوچک\n"
-                "`{last_name}` — فامیل"
+                "`{name}` `{username}` `{id}` `{first_name}` `{last_name}`"
             )
 
         elif state == "WAIT_TEMPLATE_TEXT":
             title = user_temp[uid].get('tmpl_title', 'بدون عنوان')
             tid = await db_add_template(uid, title, text)
             await event.respond(
-                f"قالب «{title}» ذخیره شد. (شناسه: `{tid}`)",
+                f"✅ قالب «{title}» ذخیره شد. (شناسه: `{tid}`)",
                 buttons=back_kb(b"menu_templates")
             )
             user_states.pop(uid, None)
@@ -1147,11 +1114,10 @@ async def finalize_account(event, uid, client):
                                       session_str, acc_name, username)
         await client.disconnect()
         await event.respond(
-            "اکانت اضافه شد\n━━━━━━━━━━━━━━━━━━\n\n"
+            "✅ اکانت اضافه شد\n━━━━━━━━━━━━━━━━━━\n\n"
             f"نام: {acc_name}\n"
             f"یوزرنیم: `@{username or 'ندارد'}`\n"
-            f"شماره: `{phone}`\n"
-            f"شناسه: `{acc_id}`",
+            f"شماره: `{phone}`",
             buttons=[[btn("مدیریت اکانت‌ها 📁", b"menu_accounts", "success")]]
         )
     except Exception as e:
@@ -1187,7 +1153,7 @@ async def process_single_target(event, uid, target_raw):
             if t:
                 template_text = t[3]
 
-        status = await event.respond(f"🔍 در حال بررسی پروفایل...")
+        status = await event.respond(f"🔍 در حال بررسی...")
 
         faces, total, full_name, username, user_id_str = await extract_faces_from_profile(
             client, target, status
@@ -1201,6 +1167,7 @@ async def process_single_target(event, uid, target_raw):
             )
             return
 
+        # ساخت کپشن
         footer = template_text
         if footer:
             footer = footer.replace("{name}", full_name)
@@ -1208,27 +1175,46 @@ async def process_single_target(event, uid, target_raw):
             footer = footer.replace("{first_name}", target.first_name or "")
             footer = footer.replace("{last_name}", target.last_name or "")
             footer = footer.replace("{id}", user_id_str)
+        else:
+            footer = f"👤 {full_name}"
+            if username:
+                footer += f"\n🆔 @{username}"
 
-        await status.edit(f"📤 در حال ارسال {len(faces)} چهره...")
+        await status.edit(f"📤 در حال ارسال {len(faces)} چهره به پیوی...")
 
-        sent_owner = await send_photo_album(bot, uid, faces, caption=footer or None)
-        sent_channel = 0
-        if CHANNEL_ID:
-            try:
-                sent_channel = await send_photo_album(bot, CHANNEL_ID, faces, caption=footer or None)
-            except Exception as e:
-                logger.warning(f"channel send error: {e}")
+        # ═══════ ارسال به پیوی ═══════
+        sent_owner = await send_photo_album(bot, uid, faces, caption=footer)
+
+        if sent_owner == 0:
+            await status.edit("❌ خطا در ارسال به پیوی.")
+            return
+
+        # ═══════ ذخیره برای دکمه کانال ═══════
+        import uuid
+        send_key = str(uuid.uuid4())[:12]
+        pending_channel_sends[send_key] = {
+            'faces': faces,
+            'caption': footer,
+        }
+
+        # پاکسازی قدیمی‌ها
+        if len(pending_channel_sends) > 50:
+            keys = list(pending_channel_sends.keys())[:20]
+            for k in keys:
+                pending_channel_sends.pop(k, None)
 
         await status.edit(
-            f"✅ تکمیل شد\n"
+            f"✅ به پیوی ارسال شد ({sent_owner} چهره)\n"
             f"━━━━━━━━━━━━━━━━━━\n\n"
-            f"نام: {full_name}\n"
-            f"یوزرنیم: `@{username or 'ندارد'}`\n"
-            f"شناسه: `{user_id_str}`\n\n"
-            f"کل فایل‌ها: {total}\n"
-            f"چهره‌ها ارسال شده: {sent_owner}\n"
-            f"به کانال: {sent_channel}",
-            buttons=back_kb()
+            f"👤 {full_name}\n"
+            f"🆔 `@{username or 'ندارد'}`\n"
+            f"📊 کل فایل: {total}\n"
+            f"🖼 چهره: {len(faces)}\n\n"
+            f"آیا به کانال ارسال شود؟",
+            buttons=[
+                [btn("📡 ارسال به کانال", f"send_channel_{send_key}".encode(), "success")],
+                [btn("❌ لغو", f"cancel_channel_{send_key}".encode(), "danger")]
+            ]
         )
 
     except Exception as e:
@@ -1301,6 +1287,7 @@ async def process_multi_targets(event, uid, targets):
 
                 await send_photo_album(bot, uid, faces, caption=footer or None)
 
+                # ارسال خودکار به کانال در حالت multi
                 if CHANNEL_ID:
                     try:
                         await send_photo_album(bot, CHANNEL_ID, faces, caption=footer or None)
@@ -1317,7 +1304,6 @@ async def process_multi_targets(event, uid, targets):
 
         await status.edit(
             f"✅ تکمیل شد\n"
-            f"━━━━━━━━━━━━━━━━━━\n\n"
             f"کل: {total}\n"
             f"موفق: {success}\n"
             f"ناموفق: {failed}",
@@ -1383,7 +1369,7 @@ async def process_group(event, uid, link):
                     break
                 participants.extend(result.users)
                 offset += len(result.users)
-                if len(result.users) < 100 or len(participants) >= 100:
+                if len(result.users) < 100 or len(participants) >= 50:
                     break
                 await asyncio.sleep(0.5)
             except:
@@ -1466,7 +1452,7 @@ async def main():
     init_yunet()
 
     logger.info(f"مالکان: {ADMIN_IDS}")
-    logger.info(f"کانال مقصد: {CHANNEL_ID}")
+    logger.info(f"کانال: {CHANNEL_ID}")
 
     max_retries = 10
     connected = False
@@ -1475,12 +1461,12 @@ async def main():
         try:
             await bot.start(bot_token=BOT_TOKEN)
             me = await bot.get_me()
-            logger.info(f"ربات @{me.username} راه‌اندازی شد")
+            logger.info(f"✅ ربات @{me.username} راه‌اندازی شد")
             connected = True
             break
         except FloodWaitError as e:
             wait_time = e.seconds + 30
-            logger.warning(f"FloodWait: {wait_time}s (تلاش {attempt+1}/{max_retries})")
+            logger.warning(f"FloodWait: {wait_time}s")
             await asyncio.sleep(wait_time)
         except Exception as e:
             logger.exception(f"start error: {e}")
