@@ -1,7 +1,6 @@
 """
-ربات دریافت پروفایل + جداسازی چهره زن
-- تشخیص چهره با YuNet
-- تشخیص جنسیت با DeepFace
+ربات دریافت پروفایل + جداسازی چهره
+- تشخیص چهره با YuNet (بدون فیلتر جنسیت)
 - بررسی ویدیوها فریم‌به‌فریم
 - ارسال آلبومی به پیوی + کانال هاردکد
 - چند مالک
@@ -64,12 +63,11 @@ BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627"
 
 # تنظیمات تشخیص
 ALBUM_CHUNK_SIZE = 10
-FACE_CONFIDENCE = 0.6
-MIN_FACE_SIZE = 40
+FACE_CONFIDENCE = 0.5  # پایین‌تر = حساس‌تر
+MIN_FACE_SIZE = 30
 MARGIN_RATIO = 0.3
-GENDER_CONFIDENCE = 0.7  # آستانه اطمینان جنسیت
 VIDEO_MAX_SIZE_MB = 20
-VIDEO_FRAME_SKIP = 15  # هر 15 فریم یکی
+VIDEO_FRAME_SKIP = 15
 
 
 # ==================== State ====================
@@ -115,8 +113,8 @@ def init_yunet():
     return _yunet
 
 
-def detect_faces(img_bgr):
-    """تشخیص چهره‌ها، خروجی: لیست (crop_bytes, bbox)"""
+def crop_faces_only(img_bgr):
+    """تشخیص چهره‌ها و کراپ (بدون فیلتر جنسیت)"""
     detector = init_yunet()
     if detector is None:
         return []
@@ -129,7 +127,7 @@ def detect_faces(img_bgr):
         if faces is None or len(faces) == 0:
             return []
 
-        results = []
+        cropped = []
         for face in faces:
             x, y, fw, fh = face[0:4]
             score = face[-1]
@@ -152,127 +150,11 @@ def detect_faces(img_bgr):
 
             ok, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
             if ok:
-                results.append(buf.tobytes())
+                cropped.append(buf.tobytes())
 
-        return results
+        return cropped
     except Exception as e:
-        logger.exception(f"detect_faces error: {e}")
-        return []
-
-
-# ==================== تشخیص جنسیت (DeepFace) ====================
-_deepface_ready = False
-
-
-def init_deepface():
-    """راه‌اندازی DeepFace (فقط یک بار)"""
-    global _deepface_ready
-    if _deepface_ready:
-        return True
-    try:
-        from deepface import DeepFace
-        # اجرای یه تست کوچیک
-        _deepface_ready = True
-        logger.info("DeepFace آماده است")
-        return True
-    except Exception as e:
-        logger.error(f"DeepFace init error: {e}")
-        return False
-
-
-def is_female_face(face_img_bgr):
-    """
-    تشخیص جنسیت چهره
-    خروجی: True اگه زن بود
-    """
-    if not _deepface_ready:
-        return None  # نامشخص
-
-    try:
-        from deepface import DeepFace
-
-        # DeepFace نیاز به RGB داره
-        rgb = cv2.cvtColor(face_img_bgr, cv2.COLOR_BGR2RGB)
-
-        result = DeepFace.analyze(
-            rgb,
-            actions=['gender'],
-            enforce_detection=False,
-            silent=True
-        )
-
-        if isinstance(result, list):
-            result = result[0]
-
-        gender = result.get('dominant_gender', '').lower()
-        confidence = result.get('gender', {}).get(
-            'Woman' if gender == 'woman' else 'Man', 0
-        )
-
-        logger.info(f"gender detect: {gender} ({confidence:.2f})")
-
-        if confidence < GENDER_CONFIDENCE * 100:
-            return None  # اطمینان کم
-
-        return gender == 'woman'
-
-    except Exception as e:
-        logger.warning(f"gender detect error: {e}")
-        return None
-
-
-def crop_and_filter_female(img_bgr):
-    """
-    تشخیص چهره‌ها و فیلتر زن‌ها
-    خروجی: لیست بایت‌های عکس‌های کراپ‌شده زن
-    """
-    detector = init_yunet()
-    if detector is None:
-        return []
-
-    try:
-        h, w = img_bgr.shape[:2]
-        detector.setInputSize((w, h))
-        _, faces = detector.detect(img_bgr)
-
-        if faces is None or len(faces) == 0:
-            return []
-
-        female_faces = []
-
-        for face in faces:
-            x, y, fw, fh = face[0:4]
-            score = face[-1]
-            if score < FACE_CONFIDENCE:
-                continue
-            if fw < MIN_FACE_SIZE or fh < MIN_FACE_SIZE:
-                continue
-
-            mx = int(fw * MARGIN_RATIO)
-            my = int(fh * MARGIN_RATIO)
-
-            x1 = max(0, int(x) - mx)
-            y1 = max(0, int(y) - my)
-            x2 = min(w, int(x + fw) + mx)
-            y2 = min(h, int(y + fh) + my)
-
-            crop = img_bgr[y1:y2, x1:x2]
-            if crop.size == 0:
-                continue
-
-            # تشخیص جنسیت
-            is_female = is_female_face(crop)
-
-            # اگه زن بود، اضافه کن
-            # اگه نامشخص بود (None)، به عنوان fallback اضافه کن (اگه بخوای)
-            if is_female is True:
-                ok, buf = cv2.imencode('.jpg', crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
-                if ok:
-                    female_faces.append(buf.tobytes())
-
-        return female_faces
-    except Exception as e:
-        logger.exception(f"crop_and_filter error: {e}")
+        logger.exception(f"crop_faces error: {e}")
         return []
 
 
@@ -624,11 +506,11 @@ async def resolve_entity(client, raw):
     return None
 
 
-# ==================== استخراج عکس‌های زن از پروفایل ====================
-async def extract_female_faces_from_profile(client, target, status_msg=None):
+# ==================== استخراج چهره‌ها از پروفایل ====================
+async def extract_faces_from_profile(client, target, status_msg=None):
     """
-    گرفتن پروفایل‌های کاربر (عکس + ویدیو)، جداسازی چهره‌های زن
-    خروجی: (list_of_female_face_bytes, total_count, full_name, username, user_id)
+    گرفتن پروفایل‌های کاربر (عکس + ویدیو)، جداسازی چهره‌ها
+    خروجی: (list_of_face_bytes, total_count, full_name, username, user_id)
     """
     target_id = target.id
     first_name = target.first_name or ""
@@ -647,7 +529,7 @@ async def extract_female_faces_from_profile(client, target, status_msg=None):
         photo_list = []
 
     total = len(photo_list)
-    female_faces = []
+    all_faces = []
 
     if status_msg and total > 0:
         try:
@@ -660,16 +542,13 @@ async def extract_female_faces_from_profile(client, target, status_msg=None):
 
     for idx, photo in enumerate(photo_list):
         try:
-            # تشخیص نوع (عکس یا ویدیو)
             is_video = hasattr(photo, 'video_sizes') and photo.video_sizes
             file_size = getattr(photo, 'size', 0) or 0
 
-            # اگه ویدیو و حجم زیاد بود، رد کن
             if is_video:
                 if file_size > VIDEO_MAX_SIZE_MB * 1024 * 1024:
                     continue
 
-                # دانلود ویدیو به فایل موقت
                 with tempfile.NamedTemporaryFile(suffix='.mp4', delete=False) as tmp:
                     tmp_path = tmp.name
 
@@ -678,8 +557,8 @@ async def extract_female_faces_from_profile(client, target, status_msg=None):
                     frames = extract_frames_from_video(tmp_path, skip=VIDEO_FRAME_SKIP)
 
                     for frame in frames:
-                        faces = crop_and_filter_female(frame)
-                        female_faces.extend(faces)
+                        faces = crop_faces_only(frame)
+                        all_faces.extend(faces)
 
                     os.remove(tmp_path)
                 except Exception as e:
@@ -689,21 +568,20 @@ async def extract_female_faces_from_profile(client, target, status_msg=None):
                     except:
                         pass
             else:
-                # عکس
                 buf = BytesIO()
                 await client.download_media(photo, buf)
                 buf.seek(0)
                 arr = np.frombuffer(buf.getvalue(), dtype=np.uint8)
                 img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
                 if img is not None:
-                    faces = crop_and_filter_female(img)
-                    female_faces.extend(faces)
+                    faces = crop_faces_only(img)
+                    all_faces.extend(faces)
 
             if status_msg and (idx + 1) % 3 == 0:
                 try:
                     await status_msg.edit(
                         f"🔍 در حال بررسی {idx+1}/{total}...\n"
-                        f"چهره‌های زن پیدا شده: {len(female_faces)}"
+                        f"چهره‌های پیدا شده: {len(all_faces)}"
                     )
                 except:
                     pass
@@ -712,7 +590,7 @@ async def extract_female_faces_from_profile(client, target, status_msg=None):
             logger.warning(f"file {idx} error: {e}")
             continue
 
-    return female_faces, total, full_name, username, user_id_str
+    return all_faces, total, full_name, username, user_id_str
 
 
 def extract_frames_from_video(video_path, skip=15):
@@ -724,7 +602,7 @@ def extract_frames_from_video(video_path, skip=15):
             return []
 
         count = 0
-        max_frames = 30  # حداکثر 30 فریم از هر ویدیو
+        max_frames = 30
 
         while len(frames) < max_frames:
             ret, frame = cap.read()
@@ -741,6 +619,18 @@ def extract_frames_from_video(video_path, skip=15):
     except Exception as e:
         logger.warning(f"extract_frames error: {e}")
         return []
+
+
+def deduplicate_faces(faces):
+    """حذف چهره‌های تکراری (hash-based)"""
+    unique = []
+    seen = set()
+    for face in faces:
+        h = hash(face[:200])
+        if h not in seen:
+            seen.add(h)
+            unique.append(face)
+    return unique
 
 
 # ==================== /start ====================
@@ -852,8 +742,7 @@ async def handle_callback(event):
                 "• شناسه عددی: `123456789`\n"
                 "• نام کاربری: `@username`\n"
                 "• لینک: `https://t.me/username`\n\n"
-                "⚠️ فقط چهره‌های زن استخراج و ارسال می‌شن.\n"
-                "عکس‌ها به صورت آلبوم Photo ارسال می‌شن.",
+                "⚠️ فقط چهره‌ها استخراج و به صورت آلبوم ارسال می‌شن.",
                 buttons=back_kb()
             )
 
@@ -869,7 +758,6 @@ async def handle_callback(event):
                 "`123456789`\n"
                 "`@username1`\n"
                 "`@username2`\n\n"
-                "⚠️ فقط چهره‌های زن استخراج می‌شن.\n\n"
                 "برای انصراف دستور /cancel را ارسال کنید.",
                 buttons=back_kb()
             )
@@ -886,7 +774,7 @@ async def handle_callback(event):
                 "• `https://t.me/groupname`\n"
                 "• `https://t.me/+AbCdEf123`\n"
                 "• `@groupname`\n\n"
-                "⚠️ فقط چهره‌های زن اعضا استخراج می‌شن.\n\n"
+                "⚠️ فقط چهره‌های اعضا استخراج می‌شن.\n\n"
                 "برای انصراف دستور /cancel را ارسال کنید.",
                 buttons=back_kb()
             )
@@ -1173,12 +1061,9 @@ async def process_single_target(event, uid, target_raw):
 
         target = await resolve_entity(client, target_raw)
         if not target:
-            await event.respond(
-                f"❌ کاربر `{target_raw}` پیدا نشد."
-            )
+            await event.respond(f"❌ کاربر `{target_raw}` پیدا نشد.")
             return
 
-        # گرفتن قالب
         template_text = ""
         if s[2]:
             t = await db_get_template(s[2])
@@ -1187,21 +1072,21 @@ async def process_single_target(event, uid, target_raw):
 
         status = await event.respond(f"🔍 در حال بررسی پروفایل...")
 
-        # استخراج چهره‌های زن
-        female_faces, total, full_name, username, user_id_str = await extract_female_faces_from_profile(
+        faces, total, full_name, username, user_id_str = await extract_faces_from_profile(
             client, target, status
         )
 
-        if not female_faces:
+        if not faces:
             await status.edit(
                 f"❌ چهره‌ای از کاربر {full_name} پیدا نشد.\n\n"
                 f"• پروفایلی نداره\n"
-                f"• چهره‌اش واضح نیست\n"
-                f"• چهره زن پیدا نشد"
+                f"• چهره‌اش واضح نیست"
             )
             return
 
-        # جایگزینی متغیرها در قالب
+        # حذف تکراری‌ها
+        faces = deduplicate_faces(faces)
+
         footer = template_text
         if footer:
             footer = footer.replace("{name}", full_name)
@@ -1210,15 +1095,13 @@ async def process_single_target(event, uid, target_raw):
             footer = footer.replace("{last_name}", target.last_name or "")
             footer = footer.replace("{id}", user_id_str)
 
-        # ارسال به پیوی کاربر
-        await status.edit(f"📤 در حال ارسال {len(female_faces)} چهره...")
-        sent_owner = await send_photo_album(bot, uid, female_faces, caption=footer or None)
+        await status.edit(f"📤 در حال ارسال {len(faces)} چهره...")
+        sent_owner = await send_photo_album(bot, uid, faces, caption=footer or None)
 
-        # ارسال به کانال
         sent_channel = 0
         if CHANNEL_ID:
             try:
-                sent_channel = await send_photo_album(bot, CHANNEL_ID, female_faces, caption=footer or None)
+                sent_channel = await send_photo_album(bot, CHANNEL_ID, faces, caption=footer or None)
             except Exception as e:
                 logger.warning(f"channel send error: {e}")
 
@@ -1229,7 +1112,7 @@ async def process_single_target(event, uid, target_raw):
             f"یوزرنیم: `@{username or 'ندارد'}`\n"
             f"شناسه: `{user_id_str}`\n\n"
             f"کل فایل‌ها: {total}\n"
-            f"چهره‌های زن ارسال شده: {sent_owner}\n"
+            f"چهره‌ها ارسال شده: {sent_owner}\n"
             f"به کانال: {sent_channel}",
             buttons=back_kb()
         )
@@ -1286,15 +1169,16 @@ async def process_multi_targets(event, uid, targets):
                 continue
 
             try:
-                female_faces, cnt, full_name, username, user_id_str = await extract_female_faces_from_profile(
+                faces, cnt, full_name, username, user_id_str = await extract_faces_from_profile(
                     client, target, None
                 )
 
-                if not female_faces:
+                if not faces:
                     failed += 1
                     continue
 
-                # جایگزینی متغیرها
+                faces = deduplicate_faces(faces)
+
                 footer = template_text
                 if footer:
                     footer = footer.replace("{name}", full_name)
@@ -1303,13 +1187,11 @@ async def process_multi_targets(event, uid, targets):
                     footer = footer.replace("{last_name}", target.last_name or "")
                     footer = footer.replace("{id}", user_id_str)
 
-                # ارسال به پیوی
-                await send_photo_album(bot, uid, female_faces, caption=footer or None)
+                await send_photo_album(bot, uid, faces, caption=footer or None)
 
-                # ارسال به کانال
                 if CHANNEL_ID:
                     try:
-                        await send_photo_album(bot, CHANNEL_ID, female_faces, caption=footer or None)
+                        await send_photo_album(bot, CHANNEL_ID, faces, caption=footer or None)
                     except:
                         pass
 
@@ -1418,12 +1300,14 @@ async def process_group(event, uid, link):
                 pass
 
             try:
-                female_faces, cnt, full_name, username, user_id_str = await extract_female_faces_from_profile(
+                faces, cnt, full_name, username, user_id_str = await extract_faces_from_profile(
                     client, user, None
                 )
 
-                if not female_faces:
+                if not faces:
                     continue
+
+                faces = deduplicate_faces(faces)
 
                 footer = template_text
                 if footer:
@@ -1433,11 +1317,11 @@ async def process_group(event, uid, link):
                     footer = footer.replace("{last_name}", user.last_name or "")
                     footer = footer.replace("{id}", user_id_str)
 
-                await send_photo_album(bot, uid, female_faces, caption=footer or None)
+                await send_photo_album(bot, uid, faces, caption=footer or None)
 
                 if CHANNEL_ID:
                     try:
-                        await send_photo_album(bot, CHANNEL_ID, female_faces, caption=footer or None)
+                        await send_photo_album(bot, CHANNEL_ID, faces, caption=footer or None)
                     except:
                         pass
 
@@ -1470,7 +1354,6 @@ async def process_group(event, uid, link):
 async def main():
     await init_db()
     init_yunet()
-    init_deepface()
 
     logger.info(f"مالکان: {ADMIN_IDS}")
     logger.info(f"کانال مقصد: {CHANNEL_ID}")
