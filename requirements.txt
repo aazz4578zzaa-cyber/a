@@ -5,3 +5,6 @@ numpy
 tgcrypto
 Pillow
 asyncpg
+deepface
+tf-keras
+tensorflow-cpu
